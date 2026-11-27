@@ -10,6 +10,7 @@ frontend (`frontend/`). Human setup is in `README.md`; endpoint mappings in `doc
   `python -m app.server` runs a real sync at startup, then every 15 min. Always use the sandbox below.
 - Never read, print, commit or edit `.env`, `*.key`, `data/`. Never call Garmin from tests (mock with `respx`).
 - A Garmin HTTP 429 is expected under load. The client already backs off (`garmin/client.py`); do not add retry loops or lower the sync interval.
+- `SYNC_API_TOKEN` is optional (blank = `/api/sync` open, localhost use). Don't make it mandatory or give it a default value.
 - Don't commit to `main`; use a branch and open a draft PR.
 
 ## Sandbox start (temp DB, mock data, no Garmin access)

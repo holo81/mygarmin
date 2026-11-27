@@ -24,12 +24,15 @@ are conservative; read this before exposing it beyond your own machine.
   behind a reverse proxy that adds authentication (e.g. HTTP basic auth or an
   SSO proxy) and TLS.
 
-## The sync (mutating) operation is protected
+## The sync (mutating) operation: optional token
 
-- `POST /api/sync` is the only state-changing endpoint. It requires a bearer
-  token equal to `SYNC_API_TOKEN`, compared in constant time.
-- If `SYNC_API_TOKEN` is unset, the endpoint returns **503** (sync disabled) —
-  there is no unauthenticated way to trigger Garmin calls remotely.
+- `POST /api/sync` is the only state-changing endpoint.
+- `SYNC_API_TOKEN` is **optional**. If set, the endpoint requires a matching
+  `Authorization: Bearer <token>` header (compared in constant time): 401 if
+  missing, 403 if wrong.
+- If unset (the default), anyone who can reach the API can trigger a sync. That
+  is fine for the default localhost-only bind (`HOST=127.0.0.1`) but **set a
+  token before binding to `0.0.0.0` or exposing the app** on a network.
 - The UI never ships the token: you enter it in the browser and it is kept in
   `sessionStorage` for that tab only.
 - Generate a strong token:
@@ -65,5 +68,5 @@ are conservative; read this before exposing it beyond your own machine.
 
 1. Put the API + built frontend behind a reverse proxy (Caddy/nginx) with TLS.
 2. Require authentication at the proxy for all routes.
-3. Keep `SYNC_API_TOKEN` set and strong.
+3. Set a strong `SYNC_API_TOKEN` (not optional once the app is reachable by others).
 4. Restrict the host firewall to the devices that need access.
