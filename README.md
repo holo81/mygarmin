@@ -157,7 +157,8 @@ python -m app.scheduler --interval-hours 6 --run-now
 
 ## Development mode & mock data
 
-For UI work without real credentials:
+For UI work without real credentials. **`load-fixtures` writes to `DATABASE_PATH`, so
+point it at a throwaway DB** (see `AGENTS.md`), or it will put mock rows in your real database:
 
 ```bash
 cd backend && source .venv/bin/activate

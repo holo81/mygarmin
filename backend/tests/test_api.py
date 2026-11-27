@@ -106,8 +106,8 @@ def test_missing_activity_404(client):
 
 def test_sync_guard_open_when_no_token(monkeypatch):
     """When SYNC_API_TOKEN is unset, the guard allows sync without a token."""
-    from app.config import get_settings
     from app.api import app as app_module
+    from app.config import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setenv("SYNC_API_TOKEN", "")
@@ -119,8 +119,8 @@ def test_sync_guard_open_when_no_token(monkeypatch):
 def test_sync_guard_requires_token_when_set(monkeypatch):
     from fastapi import HTTPException
 
-    from app.config import get_settings
     from app.api import app as app_module
+    from app.config import get_settings
 
     get_settings.cache_clear()
     monkeypatch.setenv("SYNC_API_TOKEN", "secret-token")

@@ -48,9 +48,8 @@ def test_pull_404(settings: Settings):
     _token(settings)
     url = settings.garmin_api_base_url.rstrip("/") + settings.garmin_path_sleep
     respx.get(url).mock(return_value=httpx.Response(404))
-    with GarminClient(settings) as c:
-        with pytest.raises(GarminNotFoundError):
-            c.pull("sleep", query={"date": "2026-10-21"})
+    with GarminClient(settings) as c, pytest.raises(GarminNotFoundError):
+        c.pull("sleep", query={"date": "2026-10-21"})
 
 
 @respx.mock
@@ -72,9 +71,8 @@ def test_pull_persistent_5xx_raises(settings: Settings, monkeypatch):
     monkeypatch.setattr("app.garmin.client.time.sleep", lambda *_: None)
     url = settings.garmin_api_base_url.rstrip("/") + settings.garmin_path_daily
     respx.get(url).mock(return_value=httpx.Response(500))
-    with GarminClient(settings) as c:
-        with pytest.raises(GarminServerError):
-            c.pull("daily", query={"calendarDate": "2026-10-21"})
+    with GarminClient(settings) as c, pytest.raises(GarminServerError):
+        c.pull("daily", query={"calendarDate": "2026-10-21"})
 
 
 @respx.mock
@@ -84,9 +82,8 @@ def test_auth_refresh_once_then_fail(settings: Settings):
     )
     url = settings.garmin_api_base_url.rstrip("/") + settings.garmin_path_daily
     route = respx.get(url).mock(return_value=httpx.Response(401))
-    with GarminClient(settings) as c:
-        with pytest.raises(GarminAuthError):
-            c.pull("daily", query={"calendarDate": "2026-10-21"})
+    with GarminClient(settings) as c, pytest.raises(GarminAuthError):
+        c.pull("daily", query={"calendarDate": "2026-10-21"})
     assert route.call_count == 2
 
 

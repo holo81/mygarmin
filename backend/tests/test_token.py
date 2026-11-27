@@ -66,9 +66,8 @@ def test_permanent_auth_failure_raises_and_does_not_retry(settings: Settings):
         return_value=httpx.Response(401, text="unauthorized")
     )
     tm = TokenManager(settings, cache_path=settings.database_file.parent / "tc.json")
-    with httpx.Client() as client:
-        with pytest.raises(GarminAuthError):
-            tm.get_token(client)
+    with httpx.Client() as client, pytest.raises(GarminAuthError):
+        tm.get_token(client)
     # Exactly one attempt: no retry loop on a permanent failure.
     assert route.call_count == 1
 
@@ -77,9 +76,8 @@ def test_missing_api_key_raises_config_error(settings: Settings):
     settings.garmin_personal_api_key = ""
     settings.garmin_personal_api_key_file = ""  # ensure no file fallback
     tm = TokenManager(settings, cache_path=settings.database_file.parent / "tc.json")
-    with httpx.Client() as client:
-        with pytest.raises(GarminConfigError):
-            tm.get_token(client)
+    with httpx.Client() as client, pytest.raises(GarminConfigError):
+        tm.get_token(client)
 
 
 def test_token_never_leaks_in_redacted():
