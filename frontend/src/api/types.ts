@@ -59,6 +59,11 @@ export interface Daily {
   avgStressLevel: number | null;
   maxStressLevel: number | null;
   stressQualifier: string | null;
+  bodyBatteryHigh: number | null;
+  bodyBatteryLow: number | null;
+  bodyBatteryMostRecent: number | null;
+  avgSpo2: number | null;
+  avgWakingRespiration: number | null;
 }
 
 export interface Sleep {
@@ -93,15 +98,28 @@ export interface BodyBatteryPoint {
   value: number;
 }
 
+export interface FitnessAge {
+  calendarDate: string | null;
+  chronologicalAge: number | null;
+  fitnessAge: number | null;
+  achievableFitnessAge: number | null;
+  previousFitnessAge: number | null;
+  deltaYears: number | null;
+  rhr: number | null;
+  bmi: number | null;
+  components: Record<string, unknown> | null;
+}
+
 export interface Overview {
   meta: Meta;
   today: {
     daily: Daily | null;
     sleep: Sleep | null;
     hrv: Hrv | null;
+    fitnessAge: FitnessAge | null;
     stress: {
       calendarDate: string;
-      bodyBatteryLevel: string | null;
+      bodyBatteryLevel: number | null;
       bodyBattery: BodyBatteryPoint[];
     } | null;
   };
@@ -165,10 +183,29 @@ export interface Sample {
   temperatureCelsius: number | null;
 }
 
+export interface HrZone {
+  zone: string;
+  seconds: number;
+  percent: number | null;
+}
+
+export interface Split {
+  split: number;
+  distanceMeters: number;
+  durationSeconds: number | null;
+  paceMinPerKm: number | null;
+  avgHrBpm: number | null;
+  elevationChangeMeters: number | null;
+}
+
 export interface ActivityDetail {
   meta: Meta;
   activity: Activity;
   samples: Sample[];
+  derived: {
+    hrZones: { basis: string; zones: HrZone[] } | null;
+    splitsPerKm: Split[] | null;
+  };
   available: {
     gps: boolean;
     heartRate: boolean;
@@ -197,6 +234,7 @@ export interface Trends {
     intensityMinutes: TrendPoint[];
     sleepDuration: TrendPoint[];
     hrv: TrendPoint[];
+    weight: TrendPoint[];
   };
 }
 

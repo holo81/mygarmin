@@ -149,3 +149,21 @@ export function timeAgo(iso: string | null | undefined): string {
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
 }
+
+const ACTIVITY_COLORS: Record<string, string> = {
+  RUNNING: "var(--str-a)",
+  CYCLING: "var(--accent-2)",
+  WALKING: "var(--rec-a)",
+  HIKING: "var(--good)",
+  LAP_SWIMMING: "var(--accent)",
+  OPEN_WATER_SWIMMING: "var(--accent)",
+  SWIMMING: "var(--accent)",
+  STRENGTH_TRAINING: "var(--slp-b)",
+  YOGA: "var(--slp-a)",
+  CARDIO: "var(--hrt-a)",
+};
+
+// CSS color for an activity type's icon chip / banner.
+export function activityColor(t: string | null | undefined): string {
+  return (t && ACTIVITY_COLORS[t.toUpperCase()]) || "var(--text-dim)";
+}

@@ -207,6 +207,63 @@ class Repository:
             data["raw_payload_id"] = raw_payload_id
         self._upsert("hrv_summaries", data, key_cols=["summary_id"])
 
+    def replace_hr_zones(self, zones: list[dict[str, Any]]) -> None:
+        """HR zones are current configuration; replace the whole set each sync."""
+        self.conn.execute("DELETE FROM heart_rate_zones")
+        now = _utc_now_iso()
+        self.conn.executemany(
+            """
+            INSERT INTO heart_rate_zones
+                (sport, training_method, resting_hr_used, lactate_threshold_hr_used,
+                 max_hr_used, zone1_floor, zone2_floor, zone3_floor, zone4_floor,
+                 zone5_floor, updated_at)
+            VALUES
+                (:sport, :training_method, :resting_hr_used, :lactate_threshold_hr_used,
+                 :max_hr_used, :zone1_floor, :zone2_floor, :zone3_floor, :zone4_floor,
+                 :zone5_floor, :updated_at)
+            """,
+            [{**z, "updated_at": now} for z in zones],
+        )
+
+    def hr_zones(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM heart_rate_zones ORDER BY sport").fetchall()
+
+    def hr_zones_for_sport(self, sport: str) -> sqlite3.Row | None:
+        row = self.conn.execute(
+            "SELECT * FROM heart_rate_zones WHERE sport = ?", (sport,)
+        ).fetchone()
+        if row is None:
+            row = self.conn.execute(
+                "SELECT * FROM heart_rate_zones WHERE sport = 'DEFAULT'"
+            ).fetchone()
+        return row
+
+    def upsert_fitness_age(self, row: dict[str, Any], raw_payload_id: int | None = None) -> None:
+        data = dict(row)
+        if raw_payload_id is not None:
+            data["raw_payload_id"] = raw_payload_id
+        self._upsert("fitness_age", data, key_cols=["calendar_date"])
+
+    def latest_fitness_age(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM fitness_age ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
+
+    def upsert_weight(self, row: dict[str, Any]) -> None:
+        self._upsert("weight_measurements", row, key_cols=["calendar_date"])
+
+    def weight_range(self, start_date: str, end_date: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM weight_measurements WHERE calendar_date BETWEEN ? AND ?"
+            " ORDER BY calendar_date ASC",
+            (start_date, end_date),
+        ).fetchall()
+
+    def latest_weight(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM weight_measurements ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
+
     # -- sync bookkeeping --------------------------------------------------
 
     def start_sync_run(self, trigger: str, window_start: int, window_end: int) -> int:
@@ -307,6 +364,12 @@ class Repository:
         return self.conn.execute(
             "SELECT * FROM stress_summaries ORDER BY calendar_date DESC LIMIT 1"
         ).fetchone()
+
+    def latest_body_battery_date(self) -> str | None:
+        row = self.conn.execute(
+            "SELECT calendar_date FROM body_battery_samples ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
+        return row["calendar_date"] if row else None
 
     def body_battery_for_date(self, calendar_date: str) -> list[sqlite3.Row]:
         return self.conn.execute(

@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
     medium_stress_duration_seconds INTEGER,
     high_stress_duration_seconds INTEGER,
     stress_qualifier            TEXT,
+    -- richer fields from the real usersummary daily endpoint
+    total_kilocalories          INTEGER,
+    resting_hr_7d_avg           INTEGER,
+    body_battery_charged        INTEGER,
+    body_battery_drained        INTEGER,
+    body_battery_high           INTEGER,
+    body_battery_low            INTEGER,
+    body_battery_most_recent    INTEGER,
+    avg_spo2                    REAL,
+    lowest_spo2                 INTEGER,
+    avg_waking_respiration      REAL,
+    highest_respiration         REAL,
+    lowest_respiration          REAL,
+    sleeping_seconds            INTEGER,
     raw_payload_id              INTEGER REFERENCES raw_payloads(id) ON DELETE SET NULL,
     first_seen_at               TEXT NOT NULL,
     updated_at                  TEXT NOT NULL
@@ -162,9 +176,13 @@ CREATE TABLE IF NOT EXISTS sleep_summaries (
     total_nap_seconds           INTEGER,
     overall_score_value         INTEGER,
     overall_score_qualifier     TEXT,
-    avg_sleep_respiration       REAL,             -- derived mean of respiration samples (documented)
-    avg_sleep_spo2              REAL,             -- derived mean of spo2 samples (documented)
-    validation                  TEXT,
+    avg_sleep_respiration       REAL,             -- API: averageRespirationValue
+    avg_sleep_spo2              REAL,             -- API: averageSpO2Value
+    lowest_spo2                 INTEGER,
+    avg_sleep_stress            REAL,
+    avg_sleep_hr                REAL,
+    awake_count                 INTEGER,
+    validation                  TEXT,             -- sleepWindowConfirmationType
     raw_payload_id              INTEGER REFERENCES raw_payloads(id) ON DELETE SET NULL,
     first_seen_at               TEXT NOT NULL,
     updated_at                  TEXT NOT NULL
@@ -258,4 +276,57 @@ CREATE TABLE IF NOT EXISTS sync_state (
     category            TEXT PRIMARY KEY,
     last_success_at     TEXT,          -- ISO-8601 UTC of last successful pull
     last_synced_through INTEGER        -- epoch s UTC: data is current up to here
+);
+
+-- --- heart-rate zones (configuration snapshot, per sport) ------------------
+-- The user's configured HR zone floors. One row per sport. Replaced wholesale
+-- on each sync (it's current configuration, not historical time-series).
+CREATE TABLE IF NOT EXISTS heart_rate_zones (
+    sport                       TEXT PRIMARY KEY,   -- DEFAULT | RUNNING | CYCLING | ...
+    training_method             TEXT,
+    resting_hr_used             INTEGER,
+    lactate_threshold_hr_used   INTEGER,
+    max_hr_used                 INTEGER,
+    zone1_floor                 INTEGER,
+    zone2_floor                 INTEGER,
+    zone3_floor                 INTEGER,
+    zone4_floor                 INTEGER,
+    zone5_floor                 INTEGER,
+    updated_at                  TEXT NOT NULL
+);
+
+-- --- weight (daily) --------------------------------------------------------
+-- Source weight is stored in GRAMS (as Garmin returns it). Body-composition
+-- fields are optional (present only with a smart scale).
+CREATE TABLE IF NOT EXISTS weight_measurements (
+    calendar_date   TEXT PRIMARY KEY,   -- yyyy-mm-dd
+    weight_grams    REAL,
+    bmi             REAL,
+    body_fat_pct    REAL,
+    body_water_pct  REAL,
+    muscle_mass_g   REAL,
+    bone_mass_g     REAL,
+    source_type     TEXT,               -- MANUAL | INDEX_SCALE | ...
+    first_seen_at   TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+-- --- fitness age (daily snapshot) ------------------------------------------
+CREATE TABLE IF NOT EXISTS fitness_age (
+    calendar_date           TEXT PRIMARY KEY,    -- yyyy-mm-dd (from lastUpdated)
+    chronological_age       REAL,
+    fitness_age             REAL,
+    achievable_fitness_age  REAL,
+    previous_fitness_age    REAL,
+    rhr_value               INTEGER,
+    bmi_value               REAL,
+    bmi_target              REAL,
+    vigorous_days_avg       REAL,
+    vigorous_days_target    REAL,
+    vigorous_minutes_avg    REAL,
+    vigorous_minutes_target REAL,
+    components_json         TEXT,                -- raw components for detail
+    raw_payload_id          INTEGER REFERENCES raw_payloads(id) ON DELETE SET NULL,
+    first_seen_at           TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
 );

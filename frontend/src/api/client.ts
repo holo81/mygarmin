@@ -40,13 +40,18 @@ export const api = {
     request<import("./types").ActivityList>(`/api/activities${qs}`),
   activity: (id: string) =>
     request<import("./types").ActivityDetail>(`/api/activities/${encodeURIComponent(id)}`),
+  activityExport: (id: string) =>
+    request<unknown>(`/api/activities/${encodeURIComponent(id)}/export`),
+  healthSnapshotExport: () => request<unknown>("/api/export/health-snapshot"),
   trends: (range: string) =>
     request<import("./types").Trends>(`/api/trends?range=${range}`),
   syncStatus: () => request<import("./types").SyncStatus>("/api/sync/status"),
-  triggerSync: (token: string, params: string) =>
+  triggerSync: (token: string, params = "enrich=true") =>
     request<unknown>(`/api/sync?${params}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      // Only send the auth header when a token is present; an unprotected
+      // server (no SYNC_API_TOKEN) accepts the request without it.
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     }),
 };
 

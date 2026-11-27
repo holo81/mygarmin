@@ -98,11 +98,18 @@ class TokenManager:
     # -- token request ------------------------------------------------------
 
     def _request_new_token(self, client: httpx.Client) -> AccessToken:
-        if not self._settings.has_api_key:
+        try:
+            api_key = self._settings.resolve_api_key()
+        except OSError as exc:
             raise GarminConfigError(
-                "No Garmin Personal API key configured. Set GARMIN_PERSONAL_API_KEY in .env."
+                "GARMIN_PERSONAL_API_KEY_FILE points to a file that could not be "
+                "read. Check the path and permissions."
+            ) from exc
+        if not api_key:
+            raise GarminConfigError(
+                "No Garmin Personal API key configured. Set GARMIN_PERSONAL_API_KEY "
+                "or GARMIN_PERSONAL_API_KEY_FILE in .env."
             )
-        api_key = self._settings.garmin_personal_api_key.strip()
         logger.info("Requesting new Garmin Personal API access token")
         try:
             resp = client.post(

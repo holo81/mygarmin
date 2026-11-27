@@ -1,36 +1,35 @@
-"""Normalization: map raw Garmin API JSON into typed DB-ready row dicts.
+"""Normalization: map real Garmin Personal API JSON into DB-ready row dicts.
 
-Why this layer exists
----------------------
-The Personal API returns the same payloads as Garmin's Health/Activity REST
-services. Field documentation appears in two casings across Garmin's materials:
-camelCase in the REST API spec (e.g. ``restingHeartRateInBeatsPerMinute``) and
-PascalCase in the data-export docs (e.g. ``RestingHeartRateInBeatsPerMinute``).
-To be robust we look up each field case-insensitively via ``_get``.
+Schemas here match the live Personal API (the modern Garmin Connect services),
+confirmed against real responses:
+  * usersummary-service/usersummary/daily        -> daily_summaries
+  * sleep-service/sleep/dailySleep               -> sleep_summaries
+  * hrv-service/hrv/{date} & /daily/{from}/{to}  -> hrv_summaries
+  * wellness-service bodyBattery/reports/daily   -> body_battery_samples
+  * wellness-service/dailyHeartRate              -> daily_hr_samples
+  * usersummary-service/stats/stress/daily/...   -> stress (overall level)
+  * activitylist-service .../search/activities   -> activities
+  * activity-service/activity/{id} (summaryDTO)  -> activity summary enrichment
 
-Data-integrity rules enforced here
-----------------------------------
-* NULL stays NULL. We never coerce a missing field to 0.
-* Source units are preserved (meters, seconds, m/s, bpm, ms). No unit math here.
-* Stress sentinels (-1..-5) and avg-stress sentinels (-1/-2) are preserved as-is.
-* Derived values (e.g. mean sleep respiration) are clearly named and documented
-  as derived, not presented as a distinct API field.
+Data-integrity rules:
+  * NULL stays NULL (missing != zero).
+  * Timestamps from the API are epoch MILLISECONDS; we store epoch SECONDS (UTC)
+    plus a device offset in seconds, derived from the GMT vs Local pair.
+  * Source units preserved (meters, seconds, m/s, bpm, ms); no unit math here.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 
 def _get(obj: dict[str, Any], *names: str) -> Any:
-    """Case-insensitive, multi-alias field getter. Returns None if absent."""
     if not isinstance(obj, dict):
         return None
-    # Fast path: exact match.
     for n in names:
         if n in obj:
             return obj[n]
-    # Case-insensitive fallback.
     lowered = {k.lower(): v for k, v in obj.items()}
     for n in names:
         if n.lower() in lowered:
@@ -40,7 +39,7 @@ def _get(obj: dict[str, Any], *names: str) -> Any:
 
 def _as_int(v: Any) -> int | None:
     if v is None or isinstance(v, bool):
-        return int(v) if isinstance(v, bool) else None
+        return None
     try:
         return int(round(float(v)))
     except (TypeError, ValueError):
@@ -68,312 +67,417 @@ def _as_bool_int(v: Any) -> int | None:
     return None
 
 
-def _mean(values: list[float]) -> float | None:
-    vals = [v for v in values if isinstance(v, (int, float))]
-    return (sum(vals) / len(vals)) if vals else None
+def _ms_to_s(v: Any) -> int | None:
+    """Epoch milliseconds -> epoch seconds (UTC)."""
+    iv = _as_int(v)
+    return iv // 1000 if iv is not None else None
 
 
-# --- activities ------------------------------------------------------------
-
-def normalize_activity(obj: dict[str, Any]) -> dict[str, Any] | None:
-    """Normalize one activity summary. Returns None if no stable id is present."""
-    summary_id = _get(obj, "summaryId")
-    activity_id = _get(obj, "activityId")
-    # summaryId is the stable natural key; fall back to activityId if absent.
-    key = summary_id or (str(activity_id) if activity_id is not None else None)
-    if key is None:
+def _parse_dt(s: Any) -> datetime | None:
+    """Parse Garmin timestamps like '2026-10-21T00:00:00.0' (no tz)."""
+    if not isinstance(s, str) or not s:
         return None
-    return {
-        "summary_id": str(key),
-        "activity_id": str(activity_id) if activity_id is not None else None,
-        "activity_type": _get(obj, "activityType"),
-        "activity_name": _get(obj, "activityName"),
-        "start_time_seconds": _as_int(_get(obj, "startTimeInSeconds")),
-        "start_time_offset_seconds": _as_int(_get(obj, "startTimeOffsetInSeconds")),
-        "duration_seconds": _as_int(_get(obj, "durationInSeconds")),
-        "distance_meters": _as_float(_get(obj, "distanceInMeters")),
-        "active_kilocalories": _as_int(_get(obj, "activeKilocalories")),
-        "avg_hr_bpm": _as_int(_get(obj, "averageHeartRateInBeatsPerMinute")),
-        "max_hr_bpm": _as_int(_get(obj, "maxHeartRateInBeatsPerMinute")),
-        "avg_speed_mps": _as_float(_get(obj, "averageSpeedInMetersPerSecond")),
-        "max_speed_mps": _as_float(_get(obj, "maxSpeedInMetersPerSecond")),
-        "avg_pace_min_per_km": _as_float(_get(obj, "averagePaceInMinutesPerKilometer")),
-        "avg_run_cadence_spm": _as_float(_get(obj, "averageRunCadenceInStepsPerMinute")),
-        "max_run_cadence_spm": _as_float(_get(obj, "maxRunCadenceInStepsPerMinute")),
-        "avg_bike_cadence_rpm": _as_float(_get(obj, "averageBikeCadenceInRoundsPerMinute")),
-        "avg_swim_cadence_spm": _as_float(
-            _get(obj, "averageSwimCadenceInStrokesPerMinute")
-        ),
-        "total_elevation_gain_m": _as_float(_get(obj, "totalElevationGainInMeters")),
-        "total_elevation_loss_m": _as_float(_get(obj, "totalElevationLossInMeters")),
-        "starting_latitude": _as_float(_get(obj, "startingLatitudeInDegree")),
-        "starting_longitude": _as_float(_get(obj, "startingLongitudeInDegree")),
-        "steps": _as_int(_get(obj, "steps")),
-        "device_name": _get(obj, "deviceName"),
-        "is_parent": _as_bool_int(_get(obj, "isParent")),
-        "parent_summary_id": _get(obj, "parentSummaryId"),
-        "manual": _as_bool_int(_get(obj, "manual")),
-    }
-
-
-def normalize_activity_samples(
-    details_obj: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Normalize the samples array inside an activityDetails object."""
-    samples = _get(details_obj, "samples") or []
-    out: list[dict[str, Any]] = []
-    for i, s in enumerate(samples):
-        if not isinstance(s, dict):
+    text = s.replace("Z", "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
             continue
-        out.append(
-            {
-                "sample_index": i,
-                "offset_seconds": None,  # computed by caller relative to start
-                "clock_time_seconds": _as_int(_get(s, "startTimeInSeconds")),
-                "latitude": _as_float(_get(s, "latitudeInDegree")),
-                "longitude": _as_float(_get(s, "longitudeInDegree")),
-                "elevation_meters": _as_float(_get(s, "elevationInMeters")),
-                "heart_rate_bpm": _as_int(_get(s, "heartRate")),
-                "speed_mps": _as_float(_get(s, "speedMetersPerSecond")),
-                "cadence": _as_float(
-                    _get(s, "stepsPerMinute", "bikeCadenceInRPM")
-                ),
-                "power_watts": _as_float(_get(s, "powerInWatts")),
-                "distance_meters": _as_float(_get(s, "totalDistanceInMeters")),
-                "temperature_celsius": _as_float(_get(s, "airTemperatureCelcius")),
-                "source": "activityDetails",
-            }
-        )
-    # Backfill offset_seconds from clock times if we have a start.
-    start = min(
-        (r["clock_time_seconds"] for r in out if r["clock_time_seconds"] is not None),
-        default=None,
-    )
-    if start is not None:
-        for r in out:
-            if r["clock_time_seconds"] is not None:
-                r["offset_seconds"] = r["clock_time_seconds"] - start
-    return out
+    return None
 
 
-# --- daily summaries -------------------------------------------------------
+def _offset_seconds_from_gmt_local(gmt: Any, local: Any) -> int | None:
+    """Derive device local offset (seconds) from paired GMT/Local naive stamps."""
+    g = _parse_dt(gmt)
+    loc = _parse_dt(local)
+    if g is None or loc is None:
+        return None
+    return int((loc - g).total_seconds())
+
+
+def _offset_from_ms(gmt_ms: Any, local_ms: Any) -> int | None:
+    g = _as_int(gmt_ms)
+    loc = _as_int(local_ms)
+    if g is None or loc is None:
+        return None
+    return int((loc - g) / 1000)
+
+
+def _gmt_str_to_s(s: Any) -> int | None:
+    dt = _parse_dt(s)
+    if dt is None:
+        return None
+    return int(dt.replace(tzinfo=UTC).timestamp())
+
+
+# --- daily summary (usersummary/daily) -------------------------------------
 
 def normalize_daily(obj: dict[str, Any]) -> dict[str, Any] | None:
     calendar_date = _get(obj, "calendarDate")
-    summary_id = _get(obj, "summaryId")
-    if not summary_id and not calendar_date:
+    if not calendar_date:
         return None
+    offset = _offset_seconds_from_gmt_local(
+        _get(obj, "wellnessStartTimeGmt"), _get(obj, "wellnessStartTimeLocal")
+    )
+    start_s = _gmt_str_to_s(_get(obj, "wellnessStartTimeGmt"))
+    duration_ms = _as_int(_get(obj, "durationInMilliseconds"))
+    moderate_min = _as_int(_get(obj, "moderateIntensityMinutes"))
+    vigorous_min = _as_int(_get(obj, "vigorousIntensityMinutes"))
     return {
-        "summary_id": str(summary_id) if summary_id else f"daily-{calendar_date}",
+        "summary_id": f"daily-{calendar_date}",
         "calendar_date": calendar_date,
-        "start_time_seconds": _as_int(_get(obj, "startTimeInSeconds")),
-        "start_time_offset_seconds": _as_int(_get(obj, "startTimeOffsetInSeconds")),
-        "duration_seconds": _as_int(_get(obj, "durationInSeconds")),
-        "steps": _as_int(_get(obj, "steps")),
-        "steps_goal": _as_int(_get(obj, "stepsGoal")),
-        "distance_meters": _as_float(_get(obj, "distanceInMeters")),
-        "floors_climbed": _as_int(_get(obj, "floorsClimbed")),
-        "floors_climbed_goal": _as_int(_get(obj, "floorsClimbedGoal")),
+        "start_time_seconds": start_s,
+        "start_time_offset_seconds": offset,
+        "duration_seconds": duration_ms // 1000 if duration_ms is not None else None,
+        "steps": _as_int(_get(obj, "totalSteps")),
+        "steps_goal": _as_int(_get(obj, "dailyStepGoal")),
+        "distance_meters": _as_float(_get(obj, "totalDistanceMeters")),
+        "floors_climbed": _as_int(_get(obj, "floorsAscended")),
+        "floors_climbed_goal": _as_int(_get(obj, "userFloorsAscendedGoal")),
         "active_kilocalories": _as_int(_get(obj, "activeKilocalories")),
         "bmr_kilocalories": _as_int(_get(obj, "bmrKilocalories")),
-        "active_time_seconds": _as_int(_get(obj, "activeTimeInSeconds")),
-        "moderate_intensity_seconds": _as_int(
-            _get(obj, "moderateIntensityDurationInSeconds")
+        "total_kilocalories": _as_int(_get(obj, "totalKilocalories")),
+        "active_time_seconds": _as_int(_get(obj, "activeSeconds")),
+        "sleeping_seconds": _as_int(_get(obj, "sleepingSeconds")),
+        # API provides intensity in MINUTES; store as seconds for schema consistency.
+        "moderate_intensity_seconds": moderate_min * 60 if moderate_min is not None else None,
+        "vigorous_intensity_seconds": vigorous_min * 60 if vigorous_min is not None else None,
+        "intensity_goal_seconds": (
+            _as_int(_get(obj, "intensityMinutesGoal")) * 60
+            if _get(obj, "intensityMinutesGoal") is not None
+            else None
         ),
-        "vigorous_intensity_seconds": _as_int(
-            _get(obj, "vigorousIntensityDurationInSeconds")
-        ),
-        "intensity_goal_seconds": _as_int(_get(obj, "intensityDurationGoalInSeconds")),
-        "min_hr_bpm": _as_int(_get(obj, "minHeartRateInBeatsPerMinute")),
-        "max_hr_bpm": _as_int(_get(obj, "maxHeartRateInBeatsPerMinute")),
-        "average_hr_bpm": _as_int(_get(obj, "averageHeartRateInBeatsPerMinute")),
-        "resting_hr_bpm": _as_int(_get(obj, "restingHeartRateInBeatsPerMinute")),
+        "min_hr_bpm": _as_int(_get(obj, "minHeartRate")),
+        "max_hr_bpm": _as_int(_get(obj, "maxHeartRate")),
+        "average_hr_bpm": _as_int(_get(obj, "lastSevenDaysAvgRestingHeartRate")),
+        "resting_hr_bpm": _as_int(_get(obj, "restingHeartRate")),
+        "resting_hr_7d_avg": _as_int(_get(obj, "lastSevenDaysAvgRestingHeartRate")),
         "avg_stress_level": _as_int(_get(obj, "averageStressLevel")),
         "max_stress_level": _as_int(_get(obj, "maxStressLevel")),
-        "stress_duration_seconds": _as_int(_get(obj, "stressDurationInSeconds")),
-        "rest_stress_duration_seconds": _as_int(_get(obj, "restStressDurationInSeconds")),
-        "activity_stress_duration_seconds": _as_int(
-            _get(obj, "activityStressDurationInSeconds")
-        ),
-        "low_stress_duration_seconds": _as_int(_get(obj, "lowStressDurationInSeconds")),
-        "medium_stress_duration_seconds": _as_int(
-            _get(obj, "mediumStressDurationInSeconds")
-        ),
-        "high_stress_duration_seconds": _as_int(_get(obj, "highStressDurationInSeconds")),
+        "stress_duration_seconds": _as_int(_get(obj, "stressDuration")),
+        "rest_stress_duration_seconds": _as_int(_get(obj, "restStressDuration")),
+        "activity_stress_duration_seconds": _as_int(_get(obj, "activityStressDuration")),
+        "low_stress_duration_seconds": _as_int(_get(obj, "lowStressDuration")),
+        "medium_stress_duration_seconds": _as_int(_get(obj, "mediumStressDuration")),
+        "high_stress_duration_seconds": _as_int(_get(obj, "highStressDuration")),
         "stress_qualifier": _get(obj, "stressQualifier"),
+        "body_battery_charged": _as_int(_get(obj, "bodyBatteryChargedValue")),
+        "body_battery_drained": _as_int(_get(obj, "bodyBatteryDrainedValue")),
+        "body_battery_high": _as_int(_get(obj, "bodyBatteryHighestValue")),
+        "body_battery_low": _as_int(_get(obj, "bodyBatteryLowestValue")),
+        "body_battery_most_recent": _as_int(_get(obj, "bodyBatteryMostRecentValue")),
+        "avg_spo2": _as_float(_get(obj, "averageSpo2")),
+        "lowest_spo2": _as_int(_get(obj, "lowestSpo2")),
+        "avg_waking_respiration": _as_float(_get(obj, "avgWakingRespirationValue")),
+        "highest_respiration": _as_float(_get(obj, "highestRespirationValue")),
+        "lowest_respiration": _as_float(_get(obj, "lowestRespirationValue")),
     }
 
 
 def normalize_daily_hr_samples(obj: dict[str, Any]) -> list[dict[str, Any]]:
-    """Expand timeOffsetHeartRateSamples {offset: bpm} into rows."""
+    """dailyHeartRate.heartRateValues = [[epochMs, bpm], ...] -> offset rows."""
     calendar_date = _get(obj, "calendarDate")
-    samples = _get(obj, "timeOffsetHeartRateSamples") or {}
+    values = _get(obj, "heartRateValues") or []
+    start_ms = _as_int(_get(obj, "startTimestampGMT"))
     out: list[dict[str, Any]] = []
-    if isinstance(samples, dict) and calendar_date:
-        for offset, bpm in samples.items():
-            off = _as_int(offset)
-            val = _as_int(bpm)
-            if off is not None and val is not None:
-                out.append(
-                    {
-                        "calendar_date": calendar_date,
-                        "offset_seconds": off,
-                        "heart_rate_bpm": val,
-                    }
-                )
+    if not (isinstance(values, list) and calendar_date):
+        return out
+    base = None
+    if start_ms is not None:
+        base = start_ms
+    for pair in values:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        ts_ms, bpm = pair[0], pair[1]
+        val = _as_int(bpm)
+        ts = _as_int(ts_ms)
+        if val is None or ts is None:
+            continue  # null bpm = no reading; skip (not zero)
+        if base is None:
+            base = ts
+        out.append(
+            {
+                "calendar_date": calendar_date,
+                "offset_seconds": int((ts - base) / 1000),
+                "heart_rate_bpm": val,
+            }
+        )
     return out
 
 
-# --- sleep -----------------------------------------------------------------
+# --- sleep (sleep/dailySleep) ----------------------------------------------
 
 def normalize_sleep(obj: dict[str, Any]) -> dict[str, Any] | None:
-    summary_id = _get(obj, "summaryId")
     calendar_date = _get(obj, "calendarDate")
-    if not summary_id and not calendar_date:
+    if not calendar_date:
         return None
-
-    overall = _get(obj, "overallSleepScore")
-    score_value = None
-    score_qualifier = _get(obj, "overallSleepScoreQualifierKey")
-    if isinstance(overall, dict):
-        score_value = _as_int(_get(overall, "value"))
-        score_qualifier = score_qualifier or _get(overall, "qualifierKey")
-    else:
-        score_value = _as_int(_get(obj, "overallSleepScoreValue"))
-
-    resp_samples = _get(obj, "timeOffsetSleepRespiration") or {}
-    spo2_samples = _get(obj, "timeOffsetSleepSpo2") or {}
-    avg_resp = (
-        _mean([_as_float(v) for v in resp_samples.values()])
-        if isinstance(resp_samples, dict)
-        else None
+    scores = _get(obj, "sleepScores") or {}
+    overall = scores.get("overall") if isinstance(scores, dict) else None
+    score_value = _as_int(_get(overall, "value")) if isinstance(overall, dict) else None
+    score_qualifier = _get(overall, "qualifierKey") if isinstance(overall, dict) else None
+    start_s = _ms_to_s(_get(obj, "sleepStartTimestampGMT"))
+    offset = _offset_from_ms(
+        _get(obj, "sleepStartTimestampGMT"), _get(obj, "sleepStartTimestampLocal")
     )
-    avg_spo2 = (
-        _mean([_as_float(v) for v in spo2_samples.values()])
-        if isinstance(spo2_samples, dict)
-        else None
-    )
-
     return {
-        "summary_id": str(summary_id) if summary_id else f"sleep-{calendar_date}",
+        "summary_id": f"sleep-{calendar_date}",
         "calendar_date": calendar_date,
-        "start_time_seconds": _as_int(_get(obj, "startTimeInSeconds")),
-        "start_time_offset_seconds": _as_int(_get(obj, "startTimeOffsetInSeconds")),
-        "duration_seconds": _as_int(_get(obj, "durationInSeconds")),
-        "unmeasurable_seconds": _as_int(_get(obj, "unmeasurableSleepInSeconds")),
-        "deep_seconds": _as_int(_get(obj, "deepSleepDurationInSeconds")),
-        "light_seconds": _as_int(_get(obj, "lightSleepDurationInSeconds")),
-        "rem_seconds": _as_int(_get(obj, "remSleepInSeconds")),
-        "awake_seconds": _as_int(_get(obj, "awakeDurationInSeconds")),
-        "total_nap_seconds": _as_int(_get(obj, "totalNapDurationInSeconds")),
+        "start_time_seconds": start_s,
+        "start_time_offset_seconds": offset,
+        "duration_seconds": _as_int(_get(obj, "sleepTimeSeconds")),
+        "unmeasurable_seconds": _as_int(_get(obj, "unmeasurableSleepSeconds")),
+        "deep_seconds": _as_int(_get(obj, "deepSleepSeconds")),
+        "light_seconds": _as_int(_get(obj, "lightSleepSeconds")),
+        "rem_seconds": _as_int(_get(obj, "remSleepSeconds")),
+        "awake_seconds": _as_int(_get(obj, "awakeSleepSeconds")),
+        "total_nap_seconds": _as_int(_get(obj, "napTimeSeconds")),
         "overall_score_value": score_value,
         "overall_score_qualifier": score_qualifier,
-        "avg_sleep_respiration": avg_resp,  # DERIVED (mean of samples)
-        "avg_sleep_spo2": avg_spo2,  # DERIVED (mean of samples)
-        "validation": _get(obj, "validation"),
+        "avg_sleep_respiration": _as_float(_get(obj, "averageRespirationValue")),
+        "avg_sleep_spo2": _as_float(_get(obj, "averageSpO2Value")),
+        "lowest_spo2": _as_int(_get(obj, "lowestSpO2Value")),
+        "avg_sleep_stress": _as_float(_get(obj, "avgSleepStress")),
+        "avg_sleep_hr": _as_float(_get(obj, "avgHeartRate")),
+        "awake_count": _as_int(_get(obj, "awakeCount")),
+        "validation": _get(obj, "sleepWindowConfirmationType"),
     }
 
 
 def normalize_sleep_stages(obj: dict[str, Any]) -> list[dict[str, Any]]:
-    levels = _get(obj, "sleepLevelsMap") or {}
-    out: list[dict[str, Any]] = []
-    if isinstance(levels, dict):
-        for stage, intervals in levels.items():
-            if not isinstance(intervals, list):
-                continue
-            for iv in intervals:
-                start = _as_int(_get(iv, "startTimeInSeconds"))
-                end = _as_int(_get(iv, "endTimeInSeconds"))
-                if start is not None and end is not None:
-                    out.append(
-                        {
-                            "stage": str(stage).lower(),
-                            "start_time_seconds": start,
-                            "end_time_seconds": end,
-                        }
-                    )
-    return out
+    """The dailySleep endpoint provides stage totals, not interval maps.
+
+    Detailed stage intervals (sleepLevelsMap) are not part of this endpoint's
+    response, so we return no interval rows here. The summary stage *durations*
+    are stored on the summary row. (Returning [] keeps the caller generic.)
+    """
+    return []
 
 
-# --- stress / body battery -------------------------------------------------
+# --- HRV (hrv/{date} and hrv/daily/{from}/{to}) ----------------------------
 
-def normalize_stress(obj: dict[str, Any]) -> dict[str, Any] | None:
-    summary_id = _get(obj, "summaryId")
-    calendar_date = _get(obj, "calendarDate")
-    if not summary_id and not calendar_date:
+def normalize_hrv(obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Normalize a single HRV summary (either the daily object's hrvSummary or
+    one element of the range endpoint's hrvSummaries list)."""
+    summary = _get(obj, "hrvSummary")
+    src = summary if isinstance(summary, dict) else obj
+    calendar_date = _get(src, "calendarDate")
+    if not calendar_date:
         return None
-    bb_event = _get(obj, "bodyBatteryDynamicFeedbackEvent")
-    bb_level = _get(bb_event, "bodyBatteryLevel") if isinstance(bb_event, dict) else None
+    baseline = _get(src, "baseline") or {}
     return {
-        "summary_id": str(summary_id) if summary_id else f"stress-{calendar_date}",
+        "summary_id": f"hrv-{calendar_date}",
         "calendar_date": calendar_date,
-        "start_time_seconds": _as_int(_get(obj, "startTimeInSeconds")),
-        "start_time_offset_seconds": _as_int(_get(obj, "startTimeOffsetInSeconds")),
-        "duration_seconds": _as_int(_get(obj, "durationInSeconds")),
-        "body_battery_level": bb_level,
+        "start_time_seconds": _gmt_str_to_s(_get(obj, "startTimestampGMT")),
+        "start_time_offset_seconds": _offset_seconds_from_gmt_local(
+            _get(obj, "startTimestampGMT"), _get(obj, "startTimestampLocal")
+        ),
+        "duration_seconds": None,
+        "last_night_avg_ms": _as_float(_get(src, "lastNightAvg")),
+        "last_night_5min_high_ms": _as_float(_get(src, "lastNight5MinHigh")),
+        "weekly_avg_ms": _as_float(_get(src, "weeklyAvg")),
+        "baseline_low_ms": _as_float(_get(baseline, "balancedLow", "lowUpper")),
+        "baseline_high_ms": _as_float(_get(baseline, "balancedUpper")),
+        "status": _get(src, "status"),
     }
 
 
-def normalize_stress_samples(obj: dict[str, Any]) -> list[dict[str, Any]]:
-    calendar_date = _get(obj, "calendarDate")
-    samples = _get(obj, "timeOffsetStressLevelValues") or {}
-    out: list[dict[str, Any]] = []
-    if isinstance(samples, dict) and calendar_date:
-        for offset, value in samples.items():
-            off = _as_int(offset)
-            val = _as_int(value)
-            if off is not None and val is not None:
-                out.append(
-                    {
-                        "calendar_date": calendar_date,
-                        "offset_seconds": off,
-                        "stress_value": val,  # may be sentinel < 0
-                    }
-                )
+def normalize_hrv_range(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries = _get(obj, "hrvSummaries") or []
+    out = []
+    if isinstance(summaries, list):
+        for s in summaries:
+            row = normalize_hrv(s)
+            if row:
+                out.append(row)
     return out
 
 
-def normalize_body_battery_samples(obj: dict[str, Any]) -> list[dict[str, Any]]:
-    calendar_date = _get(obj, "calendarDate")
-    samples = _get(obj, "timeOffsetBodyBatteryValues") or {}
+# --- stress (stats/stress/daily range) -------------------------------------
+
+def normalize_stress_range(items: list) -> list[dict[str, Any]]:
+    """Each item: {calendarDate, values:{overallStressLevel, *Duration}}."""
     out: list[dict[str, Any]] = []
-    if isinstance(samples, dict) and calendar_date:
-        for offset, value in samples.items():
-            off = _as_int(offset)
-            val = _as_int(value)
-            if off is not None and val is not None:
-                out.append(
-                    {
-                        "calendar_date": calendar_date,
-                        "offset_seconds": off,
-                        "body_battery_value": val,
-                    }
-                )
+    for it in items or []:
+        cal = _get(it, "calendarDate")
+        vals = _get(it, "values") or {}
+        if not cal:
+            continue
+        out.append(
+            {
+                "summary_id": f"stress-{cal}",
+                "calendar_date": cal,
+                "start_time_seconds": None,
+                "start_time_offset_seconds": None,
+                "duration_seconds": None,
+                "body_battery_level": None,
+                "_overall_stress": _as_int(_get(vals, "overallStressLevel")),
+            }
+        )
     return out
 
 
-# --- HRV -------------------------------------------------------------------
+# --- body battery reports --------------------------------------------------
 
-def normalize_hrv(obj: dict[str, Any]) -> dict[str, Any] | None:
-    summary_id = _get(obj, "summaryId")
-    calendar_date = _get(obj, "calendarDate")
-    # HRV payloads sometimes nest under hrvSummary.
-    summary = _get(obj, "hrvSummary")
-    src = summary if isinstance(summary, dict) else obj
-    if not summary_id and not calendar_date:
-        calendar_date = _get(src, "calendarDate")
-    if not summary_id and not calendar_date:
+def normalize_body_battery_report(item: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
+    """bodyBattery report item -> (calendarDate, [samples]).
+
+    bodyBatteryValuesArray = [[epochMs, level], ...]; descriptor list confirms
+    index 0=timestamp, 1=bodyBatteryLevel.
+    """
+    cal = _get(item, "date", "calendarDate")
+    arr = _get(item, "bodyBatteryValuesArray") or []
+    out: list[dict[str, Any]] = []
+    if not (isinstance(arr, list) and cal):
+        return cal, out
+    base = None
+    for pair in arr:
+        if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+            continue
+        ts = _as_int(pair[0])
+        level = _as_int(pair[1])
+        if ts is None or level is None:
+            continue
+        if base is None:
+            base = ts
+        out.append(
+            {
+                "calendar_date": cal,
+                "offset_seconds": int((ts - base) / 1000),
+                "body_battery_value": level,
+            }
+        )
+    return cal, out
+
+
+# --- activities (activitylist search) --------------------------------------
+
+_PACE_FLOOR_MPS = 0.1
+
+
+def normalize_hr_zones(items: list) -> list[dict[str, Any]]:
+    """Each item is the configured zone set for one sport."""
+    out: list[dict[str, Any]] = []
+    for it in items or []:
+        sport = _get(it, "sport")
+        if not sport:
+            continue
+        out.append(
+            {
+                "sport": sport,
+                "training_method": _get(it, "trainingMethod"),
+                "resting_hr_used": _as_int(_get(it, "restingHeartRateUsed")),
+                "lactate_threshold_hr_used": _as_int(_get(it, "lactateThresholdHeartRateUsed")),
+                "max_hr_used": _as_int(_get(it, "maxHeartRateUsed")),
+                "zone1_floor": _as_int(_get(it, "zone1Floor")),
+                "zone2_floor": _as_int(_get(it, "zone2Floor")),
+                "zone3_floor": _as_int(_get(it, "zone3Floor")),
+                "zone4_floor": _as_int(_get(it, "zone4Floor")),
+                "zone5_floor": _as_int(_get(it, "zone5Floor")),
+            }
+        )
+    return out
+
+
+def normalize_fitness_age(obj: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(obj, dict):
         return None
+    last_updated = _get(obj, "lastUpdated")
+    calendar_date = last_updated.split("T")[0] if isinstance(last_updated, str) else None
+    if not calendar_date:
+        return None
+    components = _get(obj, "components") or {}
+    rhr = components.get("rhr") if isinstance(components, dict) else None
+    bmi = components.get("bmi") if isinstance(components, dict) else None
+    vdays = components.get("vigorousDaysAvg") if isinstance(components, dict) else None
+    vmin = components.get("vigorousMinutesAvg") if isinstance(components, dict) else None
+    import json as _json
+
     return {
-        "summary_id": str(summary_id) if summary_id else f"hrv-{calendar_date}",
         "calendar_date": calendar_date,
-        "start_time_seconds": _as_int(_get(obj, "startTimeInSeconds")),
-        "start_time_offset_seconds": _as_int(_get(obj, "startTimeOffsetInSeconds")),
-        "duration_seconds": _as_int(_get(obj, "durationInSeconds")),
-        "last_night_avg_ms": _as_float(_get(src, "lastNightAvg", "lastNightAvgHrv")),
-        "last_night_5min_high_ms": _as_float(_get(src, "lastNight5MinHigh")),
-        "weekly_avg_ms": _as_float(_get(src, "weeklyAvg")),
-        "baseline_low_ms": _as_float(_get(src, "baselineBalancedLow", "baselineLow")),
-        "baseline_high_ms": _as_float(_get(src, "baselineBalancedHigh", "baselineHigh")),
-        "status": _get(src, "status", "hrvStatus"),
+        "chronological_age": _as_float(_get(obj, "chronologicalAge")),
+        "fitness_age": _as_float(_get(obj, "fitnessAge")),
+        "achievable_fitness_age": _as_float(_get(obj, "achievableFitnessAge")),
+        "previous_fitness_age": _as_float(_get(obj, "previousFitnessAge")),
+        "rhr_value": _as_int(_get(rhr, "value")) if isinstance(rhr, dict) else None,
+        "bmi_value": _as_float(_get(bmi, "value")) if isinstance(bmi, dict) else None,
+        "bmi_target": _as_float(_get(bmi, "targetValue")) if isinstance(bmi, dict) else None,
+        "vigorous_days_avg": _as_float(_get(vdays, "value")) if isinstance(vdays, dict) else None,
+        "vigorous_days_target": _as_float(_get(vdays, "targetValue")) if isinstance(vdays, dict) else None,
+        "vigorous_minutes_avg": _as_float(_get(vmin, "value")) if isinstance(vmin, dict) else None,
+        "vigorous_minutes_target": _as_float(_get(vmin, "targetValue")) if isinstance(vmin, dict) else None,
+        "components_json": _json.dumps(components) if components else None,
+    }
+
+
+def normalize_weight_range(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """weight/range -> one row per day, using that day's latestWeight entry.
+
+    Weight stays in GRAMS (source unit); the UI converts for display.
+    """
+    summaries = _get(obj, "dailyWeightSummaries") or []
+    out: list[dict[str, Any]] = []
+    if not isinstance(summaries, list):
+        return out
+    for s in summaries:
+        cal = _get(s, "summaryDate", "calendarDate")
+        latest = _get(s, "latestWeight") or {}
+        if not cal:
+            continue
+        out.append(
+            {
+                "calendar_date": cal,
+                "weight_grams": _as_float(_get(latest, "weight")),
+                "bmi": _as_float(_get(latest, "bmi")),
+                "body_fat_pct": _as_float(_get(latest, "bodyFat")),
+                "body_water_pct": _as_float(_get(latest, "bodyWater")),
+                "muscle_mass_g": _as_float(_get(latest, "muscleMass")),
+                "bone_mass_g": _as_float(_get(latest, "boneMass")),
+                "source_type": _get(latest, "sourceType"),
+            }
+        )
+    return out
+
+
+def normalize_activity(obj: dict[str, Any]) -> dict[str, Any] | None:
+    activity_id = _get(obj, "activityId")
+    if activity_id is None:
+        return None
+    atype = _get(obj, "activityType") or {}
+    type_key = _get(atype, "typeKey") if isinstance(atype, dict) else atype
+    start_gmt = _get(obj, "startTimeGMT")
+    start_local = _get(obj, "startTimeLocal")
+    start_s = _gmt_str_to_s(start_gmt)
+    offset = _offset_seconds_from_gmt_local(start_gmt, start_local)
+    avg_speed = _as_float(_get(obj, "averageSpeed"))
+    pace = None
+    if avg_speed and avg_speed > _PACE_FLOOR_MPS:
+        pace = (1000.0 / avg_speed) / 60.0
+    return {
+        "summary_id": str(activity_id),
+        "activity_id": str(activity_id),
+        "activity_type": type_key,
+        "activity_name": _get(obj, "activityName"),
+        "start_time_seconds": start_s,
+        "start_time_offset_seconds": offset,
+        "duration_seconds": _as_int(_get(obj, "duration")),
+        "distance_meters": _as_float(_get(obj, "distance")),
+        "active_kilocalories": _as_int(_get(obj, "calories")),
+        "avg_hr_bpm": _as_int(_get(obj, "averageHR")),
+        "max_hr_bpm": _as_int(_get(obj, "maxHR")),
+        "avg_speed_mps": avg_speed,
+        "max_speed_mps": _as_float(_get(obj, "maxSpeed")),
+        "avg_pace_min_per_km": pace,
+        "avg_run_cadence_spm": _as_float(_get(obj, "averageRunningCadenceInStepsPerMinute")),
+        "max_run_cadence_spm": _as_float(_get(obj, "maxRunningCadenceInStepsPerMinute")),
+        "avg_bike_cadence_rpm": _as_float(_get(obj, "averageBikingCadenceInRevPerMinute")),
+        "avg_swim_cadence_spm": _as_float(_get(obj, "averageSwimCadenceInStrokesPerMinute")),
+        "total_elevation_gain_m": _as_float(_get(obj, "elevationGain")),
+        "total_elevation_loss_m": _as_float(_get(obj, "elevationLoss")),
+        "starting_latitude": _as_float(_get(obj, "startLatitude")),
+        "starting_longitude": _as_float(_get(obj, "startLongitude")),
+        "steps": _as_int(_get(obj, "steps")),
+        "device_name": _get(obj, "deviceName"),
+        "is_parent": _as_bool_int(_get(obj, "isParent")),
+        "parent_summary_id": None,
+        "manual": _as_bool_int(_get(obj, "manualActivity")),
     }

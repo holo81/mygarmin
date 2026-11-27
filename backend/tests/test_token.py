@@ -75,6 +75,7 @@ def test_permanent_auth_failure_raises_and_does_not_retry(settings: Settings):
 
 def test_missing_api_key_raises_config_error(settings: Settings):
     settings.garmin_personal_api_key = ""
+    settings.garmin_personal_api_key_file = ""  # ensure no file fallback
     tm = TokenManager(settings, cache_path=settings.database_file.parent / "tc.json")
     with httpx.Client() as client:
         with pytest.raises(GarminConfigError):

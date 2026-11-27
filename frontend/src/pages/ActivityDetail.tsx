@@ -3,8 +3,6 @@ import {
   CartesianGrid,
   Area,
   AreaChart,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -12,9 +10,12 @@ import {
 } from "recharts";
 import { api, useApi } from "../api/client";
 import { MetaBanner } from "../components/MetaBanner";
+import { ChartBoundary } from "../components/ChartBoundary";
 import { Loading, ErrorState, EmptyState } from "../components/States";
 import { TrackMap } from "../components/TrackMap";
+import { ExportButton } from "../components/ExportButton";
 import {
+  activityColor,
   activityIcon,
   activityTypeLabel,
   DASH,
@@ -27,7 +28,7 @@ import {
   fmtSpeedKmh,
 } from "../lib/format";
 import { cssVar } from "../lib/theme";
-import type { Sample } from "../api/types";
+import type { ActivityDetail, Sample } from "../api/types";
 
 export function ActivityDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -40,51 +41,73 @@ export function ActivityDetailPage() {
   if (error) return <ErrorState message={error} onRetry={reload} />;
   if (!data) return null;
 
-  const { activity: a, samples, available, meta } = data;
+  const { activity: a, samples, available, meta, derived } = data;
   const unit = meta.unitSystem;
+  const title = a.activityName || activityTypeLabel(a.activityType);
 
   // Downsample for charts if there are a lot of points (keeps rendering snappy).
   const chartSamples = downsample(samples, 600);
-  const xAxisKey = "offsetSeconds";
+
+  const charts: { key: keyof Sample; title: string; color: string; show: boolean; reversed?: boolean; hr?: boolean }[] = [
+    { key: "heartRateBpm", title: "Heart rate (bpm)", color: "--bad", show: available.heartRate, hr: true },
+    { key: "paceMinPerKm", title: "Pace (min/km)", color: "--accent", show: chartSamples.some((s) => s.paceMinPerKm != null), reversed: true },
+    { key: "elevationMeters", title: "Elevation (m)", color: "--text-dim", show: available.elevation },
+    { key: "powerWatts", title: "Power (W)", color: "--accent-2", show: available.power },
+    { key: "cadence", title: "Cadence", color: "--warn", show: available.cadence },
+  ];
 
   return (
     <>
       <div className="page-head">
-        <div>
-          <Link to="/activities" className="faint" style={{ fontSize: 13 }}>
-            ← All activities
-          </Link>
-          <h1 className="page-title" style={{ marginTop: 6 }}>
-            <span style={{ marginRight: 10 }} aria-hidden>
-              {activityIcon(a.activityType)}
-            </span>
-            {a.activityName || activityTypeLabel(a.activityType)}
-          </h1>
-          <div className="page-sub">
-            {fmtLocalDateTime(a.startLocalIso)}
-            {a.deviceName ? ` · ${a.deviceName}` : ""}
-            {a.manual ? " · manual entry" : ""}
-          </div>
-        </div>
+        <Link to="/activities" className="faint" style={{ fontSize: 13 }}>
+          ← All activities
+        </Link>
+        {available.samples && (
+          <ExportButton
+            fetcher={() => api.activityExport(a.summaryId)}
+            title={`Coach export · ${title}`}
+            filenameBase={`coach-export-${a.summaryId}`}
+            description="A compact JSON summary (aggregates, HR zones, splits, drift + a downsampled series). Paste it to your AI coach, or download it."
+          />
+        )}
       </div>
 
       <MetaBanner meta={meta} />
 
+      {/* Hero: map banner (or gradient fallback) with title + headline stats over it */}
+      <div
+        className={`act-hero${available.gps ? "" : " nogps"}`}
+        style={{ ["--chip" as string]: activityColor(a.activityType) }}
+      >
+        {available.gps && <TrackMap samples={samples} />}
+        <div className="act-overlay">
+          <h1>
+            <span style={{ marginRight: 10 }} aria-hidden>
+              {activityIcon(a.activityType)}
+            </span>
+            {title}
+          </h1>
+          <div className="sub">
+            {fmtLocalDateTime(a.startLocalIso)}
+            {a.deviceName ? ` · ${a.deviceName}` : ""}
+            {a.manual ? " · manual entry" : ""}
+          </div>
+          <div className="act-hstats">
+            <HeroStat k="Duration" v={fmtDuration(a.durationSeconds)} />
+            {a.distanceMeters != null && <HeroStat k="Distance" v={fmtDistance(a.distanceMeters, unit)} />}
+            {a.avgPaceMinPerKm != null && <HeroStat k="Avg pace" v={fmtPace(a.avgPaceMinPerKm, unit)} />}
+            {a.avgHrBpm != null && <HeroStat k="Avg HR" v={`${a.avgHrBpm} bpm`} />}
+          </div>
+        </div>
+      </div>
+
       {/* Summary stats */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="stat-row">
-          <Stat k="Duration" v={fmtDuration(a.durationSeconds)} />
-          {a.distanceMeters != null && (
-            <Stat k="Distance" v={fmtDistance(a.distanceMeters, unit)} />
-          )}
-          {a.avgPaceMinPerKm != null && (
-            <Stat k="Avg pace" v={fmtPace(a.avgPaceMinPerKm, unit)} />
-          )}
+          {a.maxHrBpm != null && <Stat k="Max HR" v={`${a.maxHrBpm} bpm`} />}
           {a.avgSpeedMps != null && a.avgPaceMinPerKm == null && (
             <Stat k="Avg speed" v={fmtSpeedKmh(a.avgSpeedMps, unit)} />
           )}
-          {a.avgHrBpm != null && <Stat k="Avg HR" v={`${a.avgHrBpm} bpm`} />}
-          {a.maxHrBpm != null && <Stat k="Max HR" v={`${a.maxHrBpm} bpm`} />}
           {a.activeKilocalories != null && (
             <Stat k="Calories" v={`${fmtInt(a.activeKilocalories)} kcal`} />
           )}
@@ -104,11 +127,10 @@ export function ActivityDetailPage() {
         </div>
       </div>
 
-      {/* GPS map (only when location data exists) */}
-      {available.gps && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-title">Route</div>
-          <TrackMap samples={samples} />
+      {(derived.hrZones || derived.splitsPerKm) && (
+        <div className="grid two" style={{ marginBottom: 16 }}>
+          {derived.hrZones && <ZonesCard zones={derived.hrZones} />}
+          {derived.splitsPerKm && <SplitsCard splits={derived.splitsPerKm} unit={unit} />}
         </div>
       )}
 
@@ -125,22 +147,30 @@ export function ActivityDetailPage() {
         />
       ) : (
         <div className="grid two">
-          {available.heartRate && (
-            <ChartCard title="Heart rate (bpm)">
-              <AreaChart data={chartSamples}>
-                {commonAxes(xAxisKey)}
+          {charts.filter((c) => c.show).map((c) => (
+            <ChartCard key={c.key} title={c.title}>
+              <AreaChart data={chartSamples} syncId="activity">
+                <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
+                <XAxis dataKey="offsetSeconds" tickFormatter={(s) => fmtDuration(Number(s))} stroke={cssVar("--text-faint")} fontSize={11} minTickGap={48} />
+                <YAxis
+                  width={c.hr ? 40 : 44}
+                  reversed={c.reversed}
+                  stroke={cssVar("--text-faint")}
+                  fontSize={11}
+                  domain={c.hr ? ["dataMin - 5", "dataMax + 5"] : ["auto", "auto"]}
+                />
                 <defs>
-                  <linearGradient id="hr" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={cssVar("--bad")} stopOpacity={0.4} />
-                    <stop offset="100%" stopColor={cssVar("--bad")} stopOpacity={0} />
+                  <linearGradient id={`g-${c.key}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={cssVar(c.color)} stopOpacity={0.45} />
+                    <stop offset="100%" stopColor={cssVar(c.color)} stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <Area
                   type="monotone"
-                  dataKey="heartRateBpm"
-                  stroke={cssVar("--bad")}
+                  dataKey={c.key}
+                  stroke={cssVar(c.color)}
                   strokeWidth={2}
-                  fill="url(#hr)"
+                  fill={`url(#g-${c.key})`}
                   connectNulls
                   isAnimationActive={false}
                   dot={false}
@@ -148,90 +178,87 @@ export function ActivityDetailPage() {
                 <Tooltip {...tooltip()} />
               </AreaChart>
             </ChartCard>
-          )}
-
-          {chartSamples.some((s) => s.paceMinPerKm != null) && (
-            <ChartCard title="Pace (min/km)">
-              <LineChart data={chartSamples}>
-                {commonAxes(xAxisKey)}
-                <YAxis reversed width={44} stroke={cssVar("--text-faint")} fontSize={11} />
-                <Line
-                  type="monotone"
-                  dataKey="paceMinPerKm"
-                  stroke={cssVar("--accent")}
-                  strokeWidth={2}
-                  connectNulls
-                  isAnimationActive={false}
-                  dot={false}
-                />
-                <Tooltip {...tooltip()} />
-              </LineChart>
-            </ChartCard>
-          )}
-
-          {available.elevation && (
-            <ChartCard title="Elevation (m)">
-              <AreaChart data={chartSamples}>
-                {commonAxes(xAxisKey)}
-                <defs>
-                  <linearGradient id="elev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={cssVar("--text-dim")} stopOpacity={0.45} />
-                    <stop offset="100%" stopColor={cssVar("--text-dim")} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <Area
-                  type="monotone"
-                  dataKey="elevationMeters"
-                  stroke={cssVar("--text-dim")}
-                  strokeWidth={1.5}
-                  fill="url(#elev)"
-                  connectNulls
-                  isAnimationActive={false}
-                  dot={false}
-                />
-                <Tooltip {...tooltip()} />
-              </AreaChart>
-            </ChartCard>
-          )}
-
-          {available.power && (
-            <ChartCard title="Power (W)">
-              <LineChart data={chartSamples}>
-                {commonAxes(xAxisKey)}
-                <Line
-                  type="monotone"
-                  dataKey="powerWatts"
-                  stroke={cssVar("--accent-2")}
-                  strokeWidth={1.5}
-                  connectNulls
-                  isAnimationActive={false}
-                  dot={false}
-                />
-                <Tooltip {...tooltip()} />
-              </LineChart>
-            </ChartCard>
-          )}
-
-          {available.cadence && (
-            <ChartCard title="Cadence">
-              <LineChart data={chartSamples}>
-                {commonAxes(xAxisKey)}
-                <Line
-                  type="monotone"
-                  dataKey="cadence"
-                  stroke={cssVar("--warn")}
-                  strokeWidth={1.5}
-                  connectNulls
-                  isAnimationActive={false}
-                  dot={false}
-                />
-                <Tooltip {...tooltip()} />
-              </LineChart>
-            </ChartCard>
-          )}
+          ))}
         </div>
       )}
     </>
+  );
+}
+
+function HeroStat({ k, v }: { k: string; v: string }) {
+  return (
+    <div>
+      <div className="k">{k}</div>
+      <div className="v">{v}</div>
+    </div>
+  );
+}
+
+const ZONE_COLORS = ["--z1", "--z2", "--z3", "--z4", "--z5"];
+
+function ZonesCard({ zones }: { zones: NonNullable<ActivityDetail["derived"]["hrZones"]> }) {
+  return (
+    <div className="card">
+      <div className="card-title">
+        Heart-rate zones
+        <span className="faint" style={{ textTransform: "none", letterSpacing: 0 }}>
+          {zones.basis === "percent_of_max_hr_estimate" ? "estimate from max HR" : "your zones"}
+        </span>
+      </div>
+      <div className="zonebar">
+        {zones.zones.map((z, i) => (
+          <i key={z.zone} title={`${z.zone}: ${z.percent ?? 0}%`} style={{ width: `${z.percent ?? 0}%`, background: `var(${ZONE_COLORS[i]})` }} />
+        ))}
+      </div>
+      <div className="zone-legend">
+        {zones.zones.map((z, i) => (
+          <div key={z.zone}>
+            <span className="sw" style={{ background: `var(${ZONE_COLORS[i]})` }} />
+            {z.zone}
+            <div className="faint" style={{ marginLeft: 17 }}>
+              {fmtDuration(z.seconds)} · {z.percent != null ? `${Math.round(z.percent)}%` : DASH}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SplitsCard({ splits, unit }: { splits: NonNullable<ActivityDetail["derived"]["splitsPerKm"]>; unit: string }) {
+  const paces = splits.map((s) => s.paceMinPerKm).filter((p): p is number => p != null && p > 0);
+  const fastest = paces.length ? Math.min(...paces) : null;
+  const slowest = paces.length ? Math.max(...paces) : null;
+  return (
+    <div className="card">
+      <div className="card-title">Km splits</div>
+      <table className="table static">
+        <thead>
+          <tr>
+            <th>Km</th>
+            <th>Pace</th>
+            <th className="num">HR</th>
+            <th>&nbsp;</th>
+          </tr>
+        </thead>
+        <tbody>
+          {splits.map((s) => (
+            <tr key={s.split}>
+              <td>{s.split}</td>
+              <td>{fmtPace(s.paceMinPerKm, unit)}</td>
+              <td className="num">{s.avgHrBpm != null ? Math.round(s.avgHrBpm) : DASH}</td>
+              <td className="pace-bar">
+                {fastest != null && slowest != null && s.paceMinPerKm != null && s.paceMinPerKm > 0 && (
+                  <div className="bar">
+                    <i style={{ width: `${slowest === fastest ? 100 : 20 + ((slowest - s.paceMinPerKm) / (slowest - fastest)) * 80}%`, background: "var(--g-strain)" }} />
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -248,28 +275,14 @@ function ChartCard({ title, children }: { title: string; children: React.ReactEl
   return (
     <div className="card">
       <div className="card-title">{title}</div>
-      <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height="100%">
-          {children}
-        </ResponsiveContainer>
-      </div>
+      <ChartBoundary>
+        <div className="chart-wrap">
+          <ResponsiveContainer width="100%" height="100%">
+            {children}
+          </ResponsiveContainer>
+        </div>
+      </ChartBoundary>
     </div>
-  );
-}
-
-function commonAxes(xKey: string) {
-  return (
-    <>
-      <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
-      <XAxis
-        dataKey={xKey}
-        tickFormatter={(s) => fmtDuration(Number(s))}
-        stroke={cssVar("--text-faint")}
-        fontSize={11}
-        minTickGap={48}
-      />
-      <YAxis width={40} stroke={cssVar("--text-faint")} fontSize={11} />
-    </>
   );
 }
 

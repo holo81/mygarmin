@@ -10,6 +10,7 @@ Design:
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
@@ -17,10 +18,12 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from .. import export
 from ..config import get_settings
 from ..db.database import connect, init_db
 from ..db.repository import Repository
@@ -30,12 +33,48 @@ from . import presenter as pv
 _DAY = 86400
 
 
+logger = logging.getLogger("mygarmin.autosync")
+
+
+def _auto_sync() -> None:
+    # Skip (don't queue) if a manual sync holds the lock.
+    if not _sync_lock.acquire(blocking=False):
+        return
+    try:
+        engine = SyncEngine(get_settings())
+        try:
+            outcome = engine.incremental(trigger="scheduled")
+            engine.enrich_activity_details()
+            logger.info("Auto sync: %s (%s)", outcome.status, outcome.message)
+        finally:
+            engine.close()
+    except Exception:
+        logger.exception("Auto sync raised")
+    finally:
+        _sync_lock.release()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
     init_db(settings.database_file)
+    scheduler = None
+    if settings.auto_sync_minutes > 0 and settings.has_api_key:
+        scheduler = BackgroundScheduler(timezone="UTC")
+        scheduler.add_job(
+            _auto_sync,
+            "interval",
+            minutes=settings.auto_sync_minutes,
+            next_run_time=datetime.now(UTC),  # also sync right at startup
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.start()
+        logger.info("Auto sync every %d min", settings.auto_sync_minutes)
     yield
+    if scheduler:
+        scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="mygarmin", version="0.1.0", lifespan=lifespan)
@@ -66,10 +105,10 @@ def require_sync_token(authorization: str | None = Header(default=None)) -> None
     settings = get_settings()
     expected = settings.sync_api_token.strip()
     if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Sync is disabled: SYNC_API_TOKEN is not configured on the server.",
-        )
+        # No token configured -> sync is unprotected. This is convenient for a
+        # localhost-only deployment. If you expose the app on a network, set
+        # SYNC_API_TOKEN to require a bearer token (see docs/SECURITY.md).
+        return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     provided = authorization.split(" ", 1)[1].strip()
@@ -128,7 +167,6 @@ def overview(repo: Repository = Depends(get_repo)) -> dict:
     daily = repo.latest_daily()
     sleep = repo.latest_sleep()
     hrv = repo.latest_hrv()
-    stress = repo.latest_stress()
 
     # 7-day activity summary window based on the latest daily record.
     seven: list[dict] = []
@@ -147,12 +185,15 @@ def overview(repo: Repository = Depends(get_repo)) -> dict:
     recent_activities = [pv.activity_summary_view(a) for a in repo.activities(limit=8)]
 
     body_battery = []
-    if stress:
-        bb = repo.body_battery_for_date(stress["calendar_date"])
+    bb_date = repo.latest_body_battery_date()
+    if bb_date:
+        bb = repo.body_battery_for_date(bb_date)
         body_battery = [
             {"offsetSeconds": r["offset_seconds"], "value": r["body_battery_value"]}
             for r in bb
         ]
+
+    fitness_age = repo.latest_fitness_age()
 
     return {
         "meta": _sync_meta(repo),
@@ -160,13 +201,14 @@ def overview(repo: Repository = Depends(get_repo)) -> dict:
             "daily": pv.daily_view(daily) if daily else None,
             "sleep": pv.sleep_view(sleep) if sleep else None,
             "hrv": pv.hrv_view(hrv) if hrv else None,
+            "fitnessAge": pv.fitness_age_view(fitness_age) if fitness_age else None,
             "stress": (
                 {
-                    "calendarDate": stress["calendar_date"],
-                    "bodyBatteryLevel": stress["body_battery_level"],
+                    "calendarDate": bb_date,
+                    "bodyBatteryLevel": daily["body_battery_most_recent"] if daily else None,
                     "bodyBattery": body_battery,
                 }
-                if stress
+                if bb_date
                 else None
             ),
         },
@@ -211,12 +253,85 @@ def list_activities(
     }
 
 
+@app.get("/api/hr-zones")
+def hr_zones(repo: Repository = Depends(get_repo)) -> dict:
+    return {"meta": _sync_meta(repo), "zones": pv.hr_zones_view(repo.hr_zones())}
+
+
+@app.get("/api/export/health-snapshot")
+def health_snapshot_export(repo: Repository = Depends(get_repo)) -> dict:
+    """Self-contained JSON snapshot of the latest day's health, built for an AI coach."""
+    from datetime import date, timedelta
+
+    from ..export import build_health_snapshot_export
+
+    settings = get_settings()
+    daily = repo.latest_daily()
+    sleep = repo.latest_sleep()
+    hrv = repo.latest_hrv()
+
+    anchor = None
+    for row in (daily, sleep, hrv):
+        if row is not None:
+            anchor = row["calendar_date"]
+            break
+    if anchor is None:
+        raise HTTPException(status_code=404, detail="No health data stored yet.")
+
+    ed = date.fromisoformat(anchor)
+    d7 = (ed - timedelta(days=6)).isoformat()
+    d30 = (ed - timedelta(days=29)).isoformat()
+    end = ed.isoformat()
+
+    bb_date = repo.latest_body_battery_date()
+    body_battery = repo.body_battery_for_date(bb_date) if bb_date else []
+
+    return build_health_snapshot_export(
+        daily=daily,
+        sleep=sleep,
+        hrv=hrv,
+        body_battery=body_battery,
+        fitness_age=repo.latest_fitness_age(),
+        daily_7=repo.daily_range(d7, end),
+        daily_30=repo.daily_range(d30, end),
+        sleep_7=repo.sleep_range(d7, end),
+        sleep_30=repo.sleep_range(d30, end),
+        hrv_7=repo.hrv_range(d7, end),
+        hrv_30=repo.hrv_range(d30, end),
+        unit_system=settings.unit_system,
+    )
+
+
+def _zone_floors(repo: Repository, row) -> list[int] | None:
+    """The athlete's configured Z1..Z5 bpm floors for this sport, when all are set."""
+    zone_row = repo.hr_zones_for_sport((row["activity_type"] or "").upper())
+    if zone_row is None:
+        return None
+    floors = [zone_row[f"zone{i}_floor"] for i in range(1, 6)]
+    return floors if all(f is not None for f in floors) else None
+
+
+@app.get("/api/activities/{summary_id}/export")
+def activity_export(summary_id: str, repo: Repository = Depends(get_repo)) -> dict:
+    """Self-contained JSON summary of one activity, built for an AI coach."""
+    row = repo.activity(summary_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    settings = get_settings()
+    samples = repo.activity_samples(summary_id)
+    zone_floors = _zone_floors(repo, row)
+    return export.build_activity_coach_export(row, samples, settings.unit_system, zone_floors)
+
+
 @app.get("/api/activities/{summary_id}")
 def activity_detail(summary_id: str, repo: Repository = Depends(get_repo)) -> dict:
     row = repo.activity(summary_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Activity not found")
-    samples = [pv.sample_view(s) for s in repo.activity_samples(summary_id)]
+    raw_samples = repo.activity_samples(summary_id)
+    samples = [pv.sample_view(s) for s in raw_samples]
+    view = pv.activity_summary_view(row)
+    max_hr, _ = export._estimate_max_hr(raw_samples, view.get("maxHrBpm"))
     has_gps = any(s["latitude"] is not None and s["longitude"] is not None for s in samples)
     has_hr = any(s["heartRateBpm"] is not None for s in samples)
     has_elev = any(s["elevationMeters"] is not None for s in samples)
@@ -224,8 +339,13 @@ def activity_detail(summary_id: str, repo: Repository = Depends(get_repo)) -> di
     has_cadence = any(s["cadence"] is not None for s in samples)
     return {
         "meta": _sync_meta(repo),
-        "activity": pv.activity_summary_view(row),
+        "activity": view,
         "samples": samples,
+        # Reused from the coach export so the UI and the export agree.
+        "derived": {
+            "hrZones": export._hr_zones(raw_samples, max_hr, _zone_floors(repo, row)),
+            "splitsPerKm": export._splits(raw_samples, 1000),
+        },
         "available": {
             "gps": has_gps,
             "heartRate": has_hr,
@@ -262,6 +382,7 @@ def trends(
     dailies = [pv.daily_view(r) for r in repo.daily_range(start_date, end_date)]
     sleeps = [pv.sleep_view(r) for r in repo.sleep_range(start_date, end_date)]
     hrvs = [pv.hrv_view(r) for r in repo.hrv_range(start_date, end_date)]
+    weights = repo.weight_range(start_date, end_date)
 
     return {
         "meta": _sync_meta(repo),
@@ -300,6 +421,15 @@ def trends(
                     "status": h["status"],
                 }
                 for h in hrvs
+            ],
+            "weight": [
+                {
+                    # Convert grams -> kg for the chart; source stays in grams.
+                    "date": w["calendar_date"],
+                    "value": round(w["weight_grams"] / 1000, 2) if w["weight_grams"] is not None else None,
+                    "bmi": w["bmi"],
+                }
+                for w in weights
             ],
         },
     }

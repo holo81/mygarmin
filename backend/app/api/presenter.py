@@ -113,6 +113,11 @@ def daily_view(row: sqlite3.Row) -> dict[str, Any]:
         "avgStressLevel": _stress_or_none(d.get("avg_stress_level")),
         "maxStressLevel": d.get("max_stress_level"),
         "stressQualifier": d.get("stress_qualifier"),
+        "bodyBatteryHigh": d.get("body_battery_high"),
+        "bodyBatteryLow": d.get("body_battery_low"),
+        "bodyBatteryMostRecent": d.get("body_battery_most_recent"),
+        "avgSpo2": d.get("avg_spo2"),
+        "avgWakingRespiration": d.get("avg_waking_respiration"),
     }
 
 
@@ -154,6 +159,62 @@ def sleep_view(row: sqlite3.Row) -> dict[str, Any]:
         "avgSleepSpo2": d.get("avg_sleep_spo2"),  # derived
         "validation": d.get("validation"),
     }
+
+
+def fitness_age_view(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    import json
+
+    components = None
+    if d.get("components_json"):
+        try:
+            components = json.loads(d["components_json"])
+        except (ValueError, TypeError):
+            components = None
+    fa = d.get("fitness_age")
+    chrono = d.get("chronological_age")
+    delta = (fa - chrono) if (fa is not None and chrono is not None) else None
+    return {
+        "calendarDate": d.get("calendar_date"),
+        "chronologicalAge": chrono,
+        "fitnessAge": round(fa, 1) if fa is not None else None,
+        "achievableFitnessAge": (
+            round(d["achievable_fitness_age"], 1)
+            if d.get("achievable_fitness_age") is not None
+            else None
+        ),
+        "previousFitnessAge": (
+            round(d["previous_fitness_age"], 1)
+            if d.get("previous_fitness_age") is not None
+            else None
+        ),
+        # DERIVED: how many years older/younger than chronological.
+        "deltaYears": round(delta, 1) if delta is not None else None,
+        "rhr": d.get("rhr_value"),
+        "bmi": d.get("bmi_value"),
+        "components": components,
+    }
+
+
+def hr_zones_view(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    out = []
+    for r in rows:
+        d = dict(r)
+        out.append(
+            {
+                "sport": d.get("sport"),
+                "trainingMethod": d.get("training_method"),
+                "restingHrUsed": d.get("resting_hr_used"),
+                "lactateThresholdHrUsed": d.get("lactate_threshold_hr_used"),
+                "maxHrUsed": d.get("max_hr_used"),
+                "zone1Floor": d.get("zone1_floor"),
+                "zone2Floor": d.get("zone2_floor"),
+                "zone3Floor": d.get("zone3_floor"),
+                "zone4Floor": d.get("zone4_floor"),
+                "zone5Floor": d.get("zone5_floor"),
+            }
+        )
+    return out
 
 
 def hrv_view(row: sqlite3.Row) -> dict[str, Any]:

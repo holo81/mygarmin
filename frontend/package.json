@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check:scores": "node --experimental-strip-types src/lib/scores.check.ts"
   },
   "dependencies": {
     "maplibre-gl": "^4.7.1",
@@ -20,6 +21,7 @@
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.2",
+    "playwright": "^1.64.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8"
   }

@@ -95,54 +95,58 @@ class GarminClient:
 
     # -- resource pulls -----------------------------------------------------
 
-    def pull(
-        self,
-        category: str,
-        start_time: int,
-        end_time: int,
-        *,
-        extra_params: dict[str, Any] | None = None,
-    ) -> PullResult:
-        """Pull one data category for a UTC time window [start_time, end_time).
-
-        ``category`` is a key from ``settings.resource_paths()`` (e.g. "dailies").
-        """
+    def _resolve_path(self, category: str, path_params: dict[str, Any] | None) -> str:
         paths = self._settings.resource_paths()
         if category not in paths:
             raise GarminResponseError(f"Unknown resource category: {category}")
-        path = paths[category]
-        url = self._settings.garmin_api_base_url.rstrip("/") + path
-        params: dict[str, Any] = {
-            "uploadStartTimeInSeconds": int(start_time),
-            "uploadEndTimeInSeconds": int(end_time),
-        }
-        if extra_params:
-            params.update(extra_params)
+        template = paths[category]
+        if path_params:
+            try:
+                return template.format(**path_params)
+            except KeyError as exc:
+                raise GarminResponseError(
+                    f"Missing path parameter {exc} for category {category}"
+                ) from exc
+        return template
 
-        resp = self._get_with_retry(url, params=params)
+    def pull(
+        self,
+        category: str,
+        *,
+        path_params: dict[str, Any] | None = None,
+        query: dict[str, Any] | None = None,
+    ) -> PullResult:
+        """Pull one data category from the real Personal API.
+
+        Date selection is expressed via ``path_params`` (for templated paths like
+        ``/hrv-service/hrv/{date}``) and/or ``query`` (for endpoints that take
+        ?calendarDate=, ?date=, ?startDate=&endDate=, ?start=&limit=). ``category``
+        is a key from ``settings.resource_paths()``.
+        """
+        path = self._resolve_path(category, path_params)
+        url = self._settings.garmin_api_base_url.rstrip("/") + path
+        resp = self._get_with_retry(url, params=query or {})
         data = self._parse_json(resp) if resp.content else None
         return PullResult(
             category=category,
             path=path,
-            start_time=int(start_time),
-            end_time=int(end_time),
+            start_time=0,
+            end_time=0,
             status_code=resp.status_code,
             data=data,
             raw_bytes=resp.content or None,
         )
 
-    def download_activity_file(self, file_id: str, token: str | None = None) -> bytes:
-        """Download a .FIT activity file by its id (+ optional per-file token).
+    def download_activity_file(self, activity_id: str) -> bytes:
+        """Download an activity's file via the download-service.
 
-        The activityFile callback URL documented by Garmin is of the form
-        ``.../activityFile?id=XXX&token=YYY``. The per-file ``token`` here is the
-        Garmin-provided file token from the activity summary, NOT the OAuth token.
+        The Personal API returns a ZIP archive containing the ``.FIT`` file
+        (content-type application/x-zip-compressed). Callers unzip it before
+        decoding. The URL is ``/download-service/files/activity/{activityId}``.
         """
-        url = self._settings.garmin_api_base_url.rstrip("/") + self._settings.garmin_path_activity_file
-        params: dict[str, Any] = {"id": file_id}
-        if token:
-            params["token"] = token
-        resp = self._get_with_retry(url, params=params, expect_binary=True)
+        path = self._resolve_path("activity_file", {"activityId": activity_id})
+        url = self._settings.garmin_api_base_url.rstrip("/") + path
+        resp = self._get_with_retry(url, params={}, expect_binary=True)
         return resp.content
 
     # -- HTTP with retry/backoff -------------------------------------------

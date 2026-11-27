@@ -1,9 +1,18 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, useApi } from "../api/client";
 import { MetricCard } from "../components/MetricCard";
 import { MetaBanner } from "../components/MetaBanner";
+import { ExportButton } from "../components/ExportButton";
+import { ChartBoundary } from "../components/ChartBoundary";
+import { Contributors, ScoreRing } from "../components/ScoreRing";
+import { TrainingHeatmap } from "../components/TrainingHeatmap";
+import { cssVar } from "../lib/theme";
+import { dailyInsight, recoveryScore, sleepScore, strainScore } from "../lib/scores";
 import { Loading, ErrorState, EmptyState } from "../components/States";
 import {
+  activityColor,
   activityIcon,
   activityTypeLabel,
   DASH,
@@ -17,8 +26,11 @@ import {
 } from "../lib/format";
 import type { Daily } from "../api/types";
 
+type RingKey = "recovery" | "sleep" | "strain";
+
 export function OverviewPage({ refreshKey }: { refreshKey: number }) {
   const { data, loading, error, reload } = useApi(() => api.overview(), [refreshKey]);
+  const [open, setOpen] = useState<RingKey | null>(null);
 
   if (loading) return <Loading label="Loading your dashboard…" />;
   if (error) return <ErrorState message={error} onRetry={reload} />;
@@ -36,6 +48,20 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
     d.avgStressLevel !== null && d.avgStressLevel >= 0 ? d.avgStressLevel : null
   );
 
+  const scores = {
+    recovery: recoveryScore(today, sevenDay),
+    sleep: sleepScore(today.sleep),
+    strain: strainScore(today, sevenDay),
+  };
+  const insight = dailyInsight(scores.recovery, today.hrv);
+  const rings: { key: RingKey; label: string; grad: "rec" | "slp" | "str"; g: string }[] = [
+    { key: "recovery", label: "Recovery", grad: "rec", g: "recovery" },
+    { key: "sleep", label: "Sleep", grad: "slp", g: "sleep" },
+    { key: "strain", label: "Strain", grad: "str", g: "strain" },
+  ];
+  const openRing = rings.find((r) => r.key === open);
+  const bbPoints = today.stress?.bodyBattery ?? [];
+
   const lastAt = meta.lastSync?.finished_at ?? meta.lastSync?.started_at ?? null;
 
   return (
@@ -51,6 +77,15 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
             Last sync {timeAgo(lastAt)}
           </div>
         </div>
+        {hasAnything && (
+          <ExportButton
+            fetcher={() => api.healthSnapshotExport()}
+            label="🤖 Export health snapshot"
+            title="Health snapshot export"
+            filenameBase={`health-snapshot-${today.daily?.calendarDate ?? "latest"}`}
+            description="Today's health metrics with 7/30-day baselines, deltas, and trend arrays — built for an AI coach. Paste it to your assistant, or download it."
+          />
+        )}
       </div>
 
       <MetaBanner meta={meta} />
@@ -63,7 +98,26 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
         />
       ) : (
         <>
-          <div className="grid metrics">
+          <div className="hero">
+            {rings.map((r) => (
+              <ScoreRing
+                key={r.key}
+                label={r.label}
+                grad={r.grad}
+                score={scores[r.key]}
+                open={open === r.key}
+                onClick={() => setOpen(open === r.key ? null : r.key)}
+              />
+            ))}
+          </div>
+          {openRing && (
+            <Contributors title={openRing.label} score={scores[openRing.key]} grad={openRing.g} />
+          )}
+          {insight && <p className="insight">{insight}</p>}
+
+          {bbPoints.length >= 2 && <BodyBatteryCard points={bbPoints} />}
+
+          <div className="grid metrics" style={{ marginTop: 16 }}>
             <MetricCard
               label="Steps"
               icon="👟"
@@ -82,7 +136,7 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
                   : undefined
               }
               spark={rhrSpark}
-              accent="var(--bad)"
+              accent="var(--hrt-a)"
             />
             <MetricCard
               label="Sleep"
@@ -96,12 +150,12 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
               icon="🔋"
               value={bodyBatteryLatest(today.stress?.bodyBattery)}
               sub={
-                today.stress?.bodyBatteryLevel
-                  ? today.stress.bodyBatteryLevel.toLowerCase()
+                today.daily?.bodyBatteryHigh != null
+                  ? `Range ${today.daily.bodyBatteryLow}–${today.daily.bodyBatteryHigh}`
                   : undefined
               }
               spark={(today.stress?.bodyBattery ?? []).map((p) => p.value)}
-              accent="var(--good)"
+              accent="var(--rec-a)"
             />
             <MetricCard
               label="Stress"
@@ -143,6 +197,18 @@ export function OverviewPage({ refreshKey }: { refreshKey: number }) {
                   : undefined
               }
             />
+            <MetricCard
+              label="Fitness age"
+              icon="🎂"
+              value={today.fitnessAge ? fmtNum(today.fitnessAge.fitnessAge, 1) : null}
+              unit="yrs"
+              sub={fitnessAgeSub(today.fitnessAge)}
+              accent="var(--accent-2)"
+            />
+          </div>
+
+          <div style={{ marginTop: 20 }}>
+            <TrainingHeatmap endDate={today.daily?.calendarDate} />
           </div>
 
           <div className="grid two" style={{ marginTop: 20 }}>
@@ -185,6 +251,14 @@ function hrvSub(hrv: { status: string | null; weeklyAvgMs: number | null } | nul
 function bodyBatteryLatest(points: { value: number }[] | undefined): string | null {
   if (!points || points.length === 0) return null;
   return fmtInt(points[points.length - 1].value);
+}
+
+function fitnessAgeSub(fa: import("../api/types").FitnessAge | null) {
+  if (!fa || fa.fitnessAge == null || fa.deltaYears == null) return undefined;
+  const d = fa.deltaYears;
+  if (Math.abs(d) < 0.1) return "on par with your age";
+  const younger = d < 0;
+  return `${Math.abs(d).toFixed(1)} yrs ${younger ? "younger" : "older"} than actual`;
 }
 
 function SevenDayCard({ days, unit }: { days: Daily[]; unit: string }) {
@@ -247,15 +321,9 @@ function RecentActivitiesCard({
             <Link
               key={a.summaryId}
               to={`/activities/${encodeURIComponent(a.summaryId)}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "9px 6px",
-                borderBottom: "1px solid var(--border)",
-              }}
+              className="act-row"
             >
-              <span style={{ fontSize: 20 }} aria-hidden>
+              <span className="act-chip" style={{ ["--chip" as string]: activityColor(a.activityType) }} aria-hidden>
                 {activityIcon(a.activityType)}
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -267,9 +335,13 @@ function RecentActivitiesCard({
                 </div>
               </div>
               <div style={{ textAlign: "right", fontSize: 13 }}>
-                <div>{a.distanceMeters != null ? fmtDistance(a.distanceMeters, unit) : fmtDuration(a.durationSeconds)}</div>
+                <div style={{ fontWeight: 700 }}>
+                  {a.distanceMeters != null ? fmtDistance(a.distanceMeters, unit) : fmtDuration(a.durationSeconds)}
+                </div>
                 <div className="faint" style={{ fontSize: 12 }}>
-                  {a.avgHrBpm != null ? `${a.avgHrBpm} bpm` : fmtDuration(a.durationSeconds)}
+                  {[a.distanceMeters != null ? fmtDuration(a.durationSeconds) : null, a.avgHrBpm != null ? `${a.avgHrBpm} bpm` : null]
+                    .filter(Boolean)
+                    .join(" · ") || DASH}
                 </div>
               </div>
             </Link>
@@ -285,5 +357,33 @@ function avg(values: (number | null)[]): number | null {
   return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
 }
 
-// silence unused import in some build configs
-void fmtNum;
+function BodyBatteryCard({ points }: { points: { offsetSeconds: number; value: number }[] }) {
+  const hhmm = (sec: number) => `${String(Math.floor(sec / 3600) % 24).padStart(2, "0")}:${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")}`;
+  return (
+    <div className="card">
+      <div className="card-title">Body battery today</div>
+      <ChartBoundary>
+        <div style={{ width: "100%", height: 200 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={points} margin={{ top: 6, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="bb-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={cssVar("--rec-a")} stopOpacity={0.5} />
+                  <stop offset="100%" stopColor={cssVar("--rec-b")} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
+              <XAxis dataKey="offsetSeconds" tickFormatter={hhmm} stroke={cssVar("--text-faint")} fontSize={11} minTickGap={48} />
+              <YAxis width={32} domain={[0, 100]} stroke={cssVar("--text-faint")} fontSize={11} />
+              <Area type="monotone" dataKey="value" stroke={cssVar("--rec-a")} strokeWidth={2.5} fill="url(#bb-fill)" isAnimationActive={false} dot={false} />
+              <Tooltip
+                contentStyle={{ background: cssVar("--bg-elev-2"), border: `1px solid ${cssVar("--border-strong")}`, borderRadius: 8, fontSize: 12 }}
+                labelFormatter={(s: number) => hhmm(Number(s))}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </ChartBoundary>
+    </div>
+  );
+}
