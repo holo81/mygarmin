@@ -7,9 +7,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    allowedHosts: [".ts.net"], // reach the dev server over Tailscale
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8787",
+        target: process.env.API_URL ?? "http://127.0.0.1:8787",
         changeOrigin: true,
       },
     },

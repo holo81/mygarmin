@@ -68,7 +68,13 @@ export function TrackMap({ samples }: { samples: Sample[] }) {
       map.fitBounds(bounds, { padding: 40, duration: 0 });
     });
 
-    return () => map.remove();
+    // Keep the canvas matched to its container (hero banner / layout shifts).
+    const ro = new ResizeObserver(() => map.resize());
+    ro.observe(ref.current);
+    return () => {
+      ro.disconnect();
+      map.remove();
+    };
   }, [samples]);
 
   return <div className="map" ref={ref} />;

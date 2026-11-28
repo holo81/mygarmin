@@ -18,7 +18,14 @@ export function useTheme(): [Theme, () => void] {
     localStorage.setItem(KEY, theme);
   }, [theme]);
 
-  return [theme, () => setTheme((t) => (t === "dark" ? "light" : "dark"))];
+  // Set the attribute synchronously so charts that read CSS vars on the
+  // re-render see the new theme (an effect would run one render too late).
+  const toggle = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    setTheme(next);
+  };
+  return [theme, toggle];
 }
 
 // Read a CSS variable so Recharts (which needs concrete colors) matches the theme.

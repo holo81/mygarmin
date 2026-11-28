@@ -27,6 +27,7 @@ export function MetricCard({
   spark?: (number | null)[];
   accent?: string;
 }) {
+  const gid = `sg-${label.replace(/\W/g, "")}`;
   const noData = value === null || value === undefined || value === DASH;
   const sparkData: SparkPoint[] = (spark ?? []).map((v) => ({ v }));
   const validSpark = sparkData.filter((p) => p.v !== null);
@@ -35,7 +36,11 @@ export function MetricCard({
   return (
     <div className={`card metric${noData ? " nodata" : ""}`}>
       <div className="label">
-        {icon && <span aria-hidden>{icon}</span>}
+        {icon && (
+          <span className="chip-ico" style={{ ["--chip" as string]: accent }} aria-hidden>
+            {icon}
+          </span>
+        )}
         {label}
       </div>
       {noData ? (
@@ -52,7 +57,7 @@ export function MetricCard({
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={sparkData} margin={{ top: 2, right: 0, bottom: 0, left: 0 }}>
               <defs>
-                <linearGradient id={`sg-${label}`} x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={accent} stopOpacity={0.35} />
                   <stop offset="100%" stopColor={accent} stopOpacity={0} />
                 </linearGradient>
@@ -63,7 +68,7 @@ export function MetricCard({
                 dataKey="v"
                 stroke={accent}
                 strokeWidth={2}
-                fill={`url(#sg-${label})`}
+                fill={`url(#${gid})`}
                 connectNulls
                 isAnimationActive={false}
                 dot={false}

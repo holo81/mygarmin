@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { api, useApi } from "../api/client";
 import { MetaBanner } from "../components/MetaBanner";
 import { Loading, ErrorState, EmptyState } from "../components/States";
@@ -9,9 +9,11 @@ import {
   DASH,
   fmtDistance,
   fmtDuration,
+  fmtElevation,
   fmtInt,
   fmtLocalDateTime,
   fmtPace,
+  isMovingType,
 } from "../lib/format";
 
 const PAGE_SIZE = 25;
@@ -19,10 +21,19 @@ const PAGE_SIZE = 25;
 export function ActivitiesPage() {
   const nav = useNavigate();
   const [type, setType] = useState("");
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState(""); // debounced copy of searchInput
   const [start, setStart] = useState("");
   const [end, setEnd] = useState("");
   const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const qs = useMemo(() => {
     const p = new URLSearchParams();
@@ -60,11 +71,8 @@ export function ActivitiesPage() {
         <input
           className="input"
           placeholder="Search name or type…"
-          value={search}
-          onChange={(e) => {
-            setPage(0);
-            setSearch(e.target.value);
-          }}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           style={{ flex: "1 1 220px" }}
         />
         <select
@@ -106,12 +114,13 @@ export function ActivitiesPage() {
             }}
           />
         </label>
-        {(type || search || start || end) && (
+        {(type || searchInput || start || end) && (
           <button
             className="btn ghost"
             onClick={() => {
               setType("");
               setSearch("");
+              setSearchInput("");
               setStart("");
               setEnd("");
               setPage(0);
@@ -122,7 +131,7 @@ export function ActivitiesPage() {
         )}
       </div>
 
-      {loading ? (
+      {loading && !data ? (
         <Loading />
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
@@ -154,10 +163,12 @@ export function ActivitiesPage() {
                   onClick={() => nav(`/activities/${encodeURIComponent(a.summaryId)}`)}
                 >
                   <td>
-                    <span style={{ marginRight: 8 }} aria-hidden>
-                      {activityIcon(a.activityType)}
-                    </span>
-                    <strong>{a.activityName || activityTypeLabel(a.activityType)}</strong>
+                    <Link to={`/activities/${encodeURIComponent(a.summaryId)}`} onClick={(e) => e.stopPropagation()}>
+                      <span style={{ marginRight: 8 }} aria-hidden>
+                        {activityIcon(a.activityType)}
+                      </span>
+                      <strong>{a.activityName || activityTypeLabel(a.activityType)}</strong>
+                    </Link>
                   </td>
                   <td className="dim">{fmtLocalDateTime(a.startLocalIso)}</td>
                   <td className="num">{fmtDuration(a.durationSeconds)}</td>
@@ -165,11 +176,15 @@ export function ActivitiesPage() {
                     {a.distanceMeters != null ? fmtDistance(a.distanceMeters, unit) : DASH}
                   </td>
                   <td className="num">
-                    {a.avgPaceMinPerKm != null ? fmtPace(a.avgPaceMinPerKm, unit) : DASH}
+                    {a.avgPaceMinPerKm != null && isMovingType(a.activityType) && (a.distanceMeters ?? 0) > 0
+                      ? fmtPace(a.avgPaceMinPerKm, unit)
+                      : DASH}
                   </td>
                   <td className="num">{a.avgHrBpm != null ? `${a.avgHrBpm}` : DASH}</td>
                   <td className="num">
-                    {a.totalElevationGainM != null ? `${Math.round(a.totalElevationGainM)} m` : DASH}
+                    {a.totalElevationGainM != null && isMovingType(a.activityType)
+                      ? fmtElevation(a.totalElevationGainM, unit)
+                      : DASH}
                   </td>
                   <td className="num">{fmtInt(a.activeKilocalories)}</td>
                 </tr>

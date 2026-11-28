@@ -2,9 +2,13 @@ import type { ReactNode } from "react";
 
 export function Loading({ label = "Loading…" }: { label?: string }) {
   return (
-    <div className="state">
-      <div className="spinner" />
-      <div>{label}</div>
+    <div role="status" aria-label={label}>
+      <div className="skel-grid">
+        <div className="skeleton" />
+        <div className="skeleton" />
+        <div className="skeleton" />
+      </div>
+      <div className="skeleton tall" />
     </div>
   );
 }

@@ -64,6 +64,15 @@ export function fmtPace(minPerKm: number | null | undefined, unit: string): stri
   return `${minStr}:${secStr} ${suffix}`;
 }
 
+/** m:ss for chart axes/tooltips (no unit suffix); converts for imperial. */
+export function fmtPaceClock(minPerKm: number, unit: string): string {
+  const v = unit === "imperial" ? minPerKm * 1.609344 : minPerKm;
+  let m = Math.floor(v);
+  let sec = Math.round((v - m) * 60);
+  if (sec === 60) { m += 1; sec = 0; }
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
 export function fmtSpeedKmh(mps: number | null | undefined, unit: string): string {
   if (isNil(mps)) return DASH;
   if (unit === "imperial") return `${(mps * 2.2369363).toFixed(1)} mph`;
@@ -131,8 +140,13 @@ const ACTIVITY_ICONS: Record<string, string> = {
 };
 
 export function activityIcon(t: string | null | undefined): string {
-  if (isNil(t)) return "•";
-  return ACTIVITY_ICONS[t.toUpperCase()] ?? "•";
+  if (isNil(t)) return "🏅";
+  return ACTIVITY_ICONS[t.toUpperCase()] ?? "🏅";
+}
+
+// Types where pace/speed and elevation are meaningful (moving outdoors over distance).
+export function isMovingType(t: string | null | undefined): boolean {
+  return !isNil(t) && /RUN|WALK|HIK|CYCL|BIK/i.test(t);
 }
 
 // "time ago" from an ISO UTC timestamp, for sync freshness.
@@ -148,4 +162,22 @@ export function timeAgo(iso: string | null | undefined): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+const ACTIVITY_COLORS: Record<string, string> = {
+  RUNNING: "var(--str-a)",
+  CYCLING: "var(--accent-2)",
+  WALKING: "var(--rec-a)",
+  HIKING: "var(--good)",
+  LAP_SWIMMING: "var(--accent)",
+  OPEN_WATER_SWIMMING: "var(--accent)",
+  SWIMMING: "var(--accent)",
+  STRENGTH_TRAINING: "var(--slp-b)",
+  YOGA: "var(--slp-a)",
+  CARDIO: "var(--hrt-a)",
+};
+
+// CSS color for an activity type's icon chip / banner.
+export function activityColor(t: string | null | undefined): string {
+  return (t && ACTIVITY_COLORS[t.toUpperCase()]) || "var(--text-dim)";
 }

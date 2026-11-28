@@ -23,7 +23,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     let detail = `Request failed (HTTP ${resp.status})`;
     try {
       const body = await resp.json();
-      if (body?.detail) detail = body.detail;
+      // FastAPI errors use `detail`; the sync endpoint's 502 carries the outcome `message`.
+      if (typeof body?.detail === "string") detail = body.detail;
+      else if (typeof body?.message === "string" && body.message) detail = body.message;
     } catch {
       /* ignore */
     }
@@ -40,13 +42,18 @@ export const api = {
     request<import("./types").ActivityList>(`/api/activities${qs}`),
   activity: (id: string) =>
     request<import("./types").ActivityDetail>(`/api/activities/${encodeURIComponent(id)}`),
+  activityExport: (id: string) =>
+    request<unknown>(`/api/activities/${encodeURIComponent(id)}/export`),
+  healthSnapshotExport: () => request<unknown>("/api/export/health-snapshot"),
   trends: (range: string) =>
     request<import("./types").Trends>(`/api/trends?range=${range}`),
   syncStatus: () => request<import("./types").SyncStatus>("/api/sync/status"),
-  triggerSync: (token: string, params: string) =>
-    request<unknown>(`/api/sync?${params}`, {
+  triggerSync: (token: string, params = "enrich=true") =>
+    request<{ status: string; message: string | null }>(`/api/sync?${params}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      // Only send the auth header when a token is present; an unprotected
+      // server (no SYNC_API_TOKEN) accepts the request without it.
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     }),
 };
 
@@ -62,22 +69,26 @@ export function useApi<T>(fetcher: () => Promise<T>, deps: unknown[] = []): Asyn
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const reqId = useRef(0); // only the latest request may update state
   // Keep a stable reference to the fetcher for the given deps.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableFetcher = useCallback(fetcher, deps);
 
   const load = useCallback(() => {
+    // Previous data stays in `data` while reloading; callers show <Loading/> only when !data.
+    const id = ++reqId.current;
+    const live = () => mounted.current && id === reqId.current;
     setLoading(true);
     setError(null);
     stableFetcher()
       .then((d) => {
-        if (mounted.current) setData(d);
+        if (live()) setData(d);
       })
       .catch((e: unknown) => {
-        if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+        if (live()) setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
-        if (mounted.current) setLoading(false);
+        if (live()) setLoading(false);
       });
   }, [stableFetcher]);
 
