@@ -1,4 +1,4 @@
-"""Normalization tests: field mapping, null vs zero, sentinels, derived values."""
+"""Normalization tests against the real Personal API schemas."""
 
 from __future__ import annotations
 
@@ -6,96 +6,175 @@ from app import normalize as norm
 from tests import fixtures_api as fx
 
 
-def test_daily_maps_documented_fields():
+def test_daily_maps_real_fields():
     row = norm.normalize_daily(fx.DAILY)
     assert row is not None
-    assert row["summary_id"] == "x111-daily-1"
-    assert row["steps"] == 12543
+    assert row["summary_id"] == "daily-2026-10-21"
+    assert row["steps"] == 4433
     assert row["resting_hr_bpm"] == 52
-    assert row["active_kilocalories"] == 856
-    assert row["moderate_intensity_seconds"] == 1800
-    assert row["stress_qualifier"] == "balanced"
+    assert row["total_kilocalories"] == 2391
+    assert row["body_battery_high"] == 100
+    assert row["avg_spo2"] == 97.0
+    # device offset derived from GMT vs Local (+3h = 10800s)
+    assert row["start_time_offset_seconds"] == 10800
 
 
-def test_daily_null_vs_zero_preserved():
+def test_daily_null_vs_zero():
     row = norm.normalize_daily(fx.DAILY_NO_DATA)
-    assert row is not None
-    # steps measured zero stays zero
-    assert row["steps"] == 0
-    # resting HR absent -> None (NOT zero)
-    assert row["resting_hr_bpm"] is None
-    # avg stress sentinel -1 is preserved as-is for the presenter to hide
-    assert row["avg_stress_level"] == -1
+    assert row["steps"] == 0  # measured zero kept
+    assert row["resting_hr_bpm"] is None  # missing -> null, not zero
+    assert row["avg_stress_level"] == -1  # sentinel preserved
 
 
-def test_daily_hr_samples_expand():
-    samples = norm.normalize_daily_hr_samples(fx.DAILY)
-    assert {"calendar_date": "2026-02-08", "offset_seconds": 0, "heart_rate_bpm": 75} in samples
+def test_daily_intensity_minutes_to_seconds():
+    row = norm.normalize_daily(fx.DAILY)
+    # API gives minutes; we store seconds.
+    assert row["moderate_intensity_seconds"] == 0
+    assert row["intensity_goal_seconds"] == 150 * 60
+
+
+def test_daily_hr_samples_pairs_and_gaps():
+    samples = norm.normalize_daily_hr_samples(fx.DAILY_HEART_RATE)
+    # 4 input pairs, one with null bpm -> 3 rows, gap skipped (not zeroed).
     assert len(samples) == 3
-
-
-def test_case_insensitive_field_lookup():
-    # PascalCase (export-doc style) must also work.
-    pascal = {"CalendarDate": "2026-02-08", "Steps": 100, "SummaryId": "p1"}
-    row = norm.normalize_daily(pascal)
-    assert row["steps"] == 100
-    assert row["calendar_date"] == "2026-02-08"
-
-
-def test_sleep_stages_and_derived_means():
-    row = norm.normalize_sleep(fx.SLEEP)
-    assert row["deep_seconds"] == 7200
-    assert row["overall_score_value"] == 85
-    assert row["overall_score_qualifier"] == "GOOD"
-    # derived mean respiration = (14 + 16) / 2
-    assert row["avg_sleep_respiration"] == 15.0
-    assert row["avg_sleep_spo2"] == 96.0
-
-    stages = norm.normalize_sleep_stages(fx.SLEEP)
-    assert {"stage": "deep", "start_time_seconds": 1675810000, "end_time_seconds": 1675817200} in stages
-    assert len(stages) == 3
-
-
-def test_stress_samples_keep_sentinels():
-    samples = norm.normalize_stress_samples(fx.STRESS)
-    values = {s["offset_seconds"]: s["stress_value"] for s in samples}
-    assert values[0] == 20
-    # -2 (large motion) sentinel preserved, not dropped or zeroed
-    assert values[180] == -2
-    bb = norm.normalize_body_battery_samples(fx.STRESS)
-    assert bb[0]["body_battery_value"] == 60
-
-
-def test_stress_body_battery_level():
-    row = norm.normalize_stress(fx.STRESS)
-    assert row["body_battery_level"] == "MODERATE"
-
-
-def test_hrv_nested_summary():
-    row = norm.normalize_hrv(fx.HRV)
-    assert row["last_night_avg_ms"] == 45
-    assert row["weekly_avg_ms"] == 42
-    assert row["status"] == "BALANCED"
-    assert row["baseline_low_ms"] == 38
-
-
-def test_activity_normalizes_and_keys_on_summary_id():
-    row = norm.normalize_activity(fx.ACTIVITY)
-    assert row["summary_id"] == "x111-act-1"
-    assert row["activity_type"] == "RUNNING"
-    assert row["distance_meters"] == 10000.0
-    assert row["avg_hr_bpm"] == 152
-    assert row["manual"] == 0
-
-
-def test_activity_samples_compute_offsets():
-    samples = norm.normalize_activity_samples(fx.ACTIVITY_DETAILS)
-    assert len(samples) == 2
     assert samples[0]["offset_seconds"] == 0
-    assert samples[1]["offset_seconds"] == 10
-    assert samples[1]["heart_rate_bpm"] == 150
-    assert samples[0]["cadence"] == 160.0
+    assert samples[0]["heart_rate_bpm"] == 55
+    assert samples[-1]["heart_rate_bpm"] == 58
+
+
+def test_sleep_real_schema():
+    row = norm.normalize_sleep(fx.SLEEP)
+    assert row["summary_id"] == "sleep-2026-10-21"
+    assert row["duration_seconds"] == 27591
+    assert row["deep_seconds"] == 3960
+    assert row["overall_score_value"] == 87
+    assert row["overall_score_qualifier"] == "GOOD"
+    assert row["avg_sleep_spo2"] == 97.0
+    assert row["validation"] == "enhanced_confirmed_final"
+
+
+def test_hrv_single_and_range():
+    row = norm.normalize_hrv(fx.HRV)
+    assert row["summary_id"] == "hrv-2026-10-21"
+    assert row["last_night_avg_ms"] == 63.0
+    assert row["weekly_avg_ms"] == 54.0
+    assert row["baseline_low_ms"] == 50.0
+    assert row["baseline_high_ms"] == 73.0
+    assert row["status"] == "BALANCED"
+
+    rows = norm.normalize_hrv_range(fx.HRV_RANGE)
+    assert len(rows) == 2
+    assert {r["calendar_date"] for r in rows} == {"2026-10-20", "2026-10-21"}
+
+
+def test_body_battery_report_array():
+    cal, samples = norm.normalize_body_battery_report(fx.BODY_BATTERY_REPORT[0], "UTC")
+    assert cal == "2026-10-20"
+    assert len(samples) == 3
+    # offsets are relative to the day start (UTC midnight 2026-10-20 = 1792454400)
+    assert samples[0]["offset_seconds"] == 1792011600 - 1792454400
+    assert samples[0]["body_battery_value"] == 27
+    assert samples[1]["body_battery_value"] == 91
+
+
+def test_stress_range():
+    rows = norm.normalize_stress_range(fx.STRESS_RANGE)
+    assert rows[0]["calendar_date"] == "2026-10-20"
+    assert rows[0]["_overall_stress"] == 29
+
+
+def test_activity_strength_no_gps():
+    row = norm.normalize_activity(fx.ACTIVITY)
+    assert row["summary_id"] == "24734466614"
+    assert row["activity_type"] == "strength_training"
+    assert row["active_kilocalories"] is None  # "calories" is total energy
+    assert row["avg_hr_bpm"] == 112
+    assert row["starting_latitude"] is None  # no GPS for strength
+    # avg speed 0 -> no pace (not a divide-by-zero)
+    assert row["avg_pace_min_per_km"] is None
+
+
+def test_activity_run_has_gps_and_pace():
+    row = norm.normalize_activity(fx.ACTIVITY_RUN)
+    assert row["activity_type"] == "running"
+    assert row["distance_meters"] == 10000.0
+    assert row["starting_latitude"] == 60.17
+    assert row["avg_pace_min_per_km"] is not None
+    assert row["start_time_offset_seconds"] == 10800
 
 
 def test_activity_without_id_returns_none():
-    assert norm.normalize_activity({"activityType": "RUNNING"}) is None
+    assert norm.normalize_activity({"activityName": "x"}) is None
+
+
+def test_hr_zones_normalize():
+    items = [
+        {
+            "sport": "RUNNING",
+            "trainingMethod": "HR_MAX",
+            "restingHeartRateUsed": 55,
+            "lactateThresholdHeartRateUsed": 171,
+            "maxHeartRateUsed": 197,
+            "zone1Floor": 99,
+            "zone2Floor": 118,
+            "zone3Floor": 138,
+            "zone4Floor": 158,
+            "zone5Floor": 177,
+        }
+    ]
+    rows = norm.normalize_hr_zones(items)
+    assert len(rows) == 1
+    assert rows[0]["sport"] == "RUNNING"
+    assert rows[0]["zone5_floor"] == 177
+    assert rows[0]["max_hr_used"] == 197
+
+
+def test_fitness_age_normalize():
+    obj = {
+        "chronologicalAge": 45,
+        "fitnessAge": 46.76,
+        "achievableFitnessAge": 38.9,
+        "previousFitnessAge": 45.8,
+        "components": {
+            "rhr": {"value": 53},
+            "bmi": {"value": 34.3, "targetValue": 21.5},
+            "vigorousDaysAvg": {"value": 0.8, "targetValue": 3},
+            "vigorousMinutesAvg": {"value": 50.0, "targetValue": 75},
+        },
+        "lastUpdated": "2026-10-22T00:00:00.0",
+    }
+    row = norm.normalize_fitness_age(obj)
+    assert row["calendar_date"] == "2026-10-22"
+    assert row["fitness_age"] == 46.76
+    assert row["rhr_value"] == 53
+    assert row["bmi_value"] == 34.3
+    assert row["bmi_target"] == 21.5
+    assert row["components_json"] is not None
+
+
+def test_fitness_age_without_date_returns_none():
+    assert norm.normalize_fitness_age({"fitnessAge": 40}) is None
+
+
+def test_weight_range_normalize():
+    obj = {
+        "dailyWeightSummaries": [
+            {
+                "summaryDate": "2026-10-06",
+                "latestWeight": {"weight": 98900.0, "bmi": None, "sourceType": "MANUAL"},
+            },
+            {
+                "summaryDate": "2026-10-08",
+                "latestWeight": {"weight": 98100.0, "bmi": 30.1, "sourceType": "INDEX_SCALE"},
+            },
+        ]
+    }
+    rows = norm.normalize_weight_range(obj)
+    assert len(rows) == 2
+    assert rows[0]["calendar_date"] == "2026-10-06"
+    assert rows[0]["weight_grams"] == 98900.0  # grams preserved (source unit)
+    assert rows[1]["bmi"] == 30.1
+
+
+def test_weight_range_empty():
+    assert norm.normalize_weight_range({"dailyWeightSummaries": []}) == []

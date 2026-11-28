@@ -1,12 +1,8 @@
-"""Development-only mock data loader.
+"""Development-only mock data loader (schema-aligned with the real API).
 
-IMPORTANT: This produces clearly-labelled MOCK data for local UI development
-without real Garmin credentials. It is refused when APP_ENV=production (both here
-and in the CLI), so production never shows fabricated values.
-
-Every record written here is marked by writing into a dedicated sync_run with
-trigger='mock' and message prefixed 'MOCK DATA', and the API exposes a
-``data_source`` flag so the frontend can display a prominent "Mock data" banner.
+Produces clearly-labelled MOCK data for local UI development without real
+credentials. Refused when APP_ENV=production. The API reports dataSource=mock so
+the frontend shows a prominent banner; production never shows these values.
 """
 
 from __future__ import annotations
@@ -23,30 +19,24 @@ from .db.repository import Repository
 _DAY = 86400
 
 
-def _calendar_dates(days: int) -> list[tuple[str, int]]:
-    out = []
+def _dates(days: int):
     today = datetime.now(UTC).date()
     for i in range(days):
         d = today - timedelta(days=i)
         start = int(datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp())
-        out.append((d.isoformat(), start))
-    return out
+        yield d.isoformat(), start
 
 
 def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
-    """Populate the DB with deterministic, clearly-labelled mock data."""
     rng = random.Random(42)
     conn = connect(settings.database_file)
     repo = Repository(conn)
     count = 0
+    offset = 10800  # +3h approx Europe/Helsinki
     try:
         run_id = repo.start_sync_run("mock", int(time.time()) - days * _DAY, int(time.time()))
-        offset = 10800  # +3h (approx Europe/Helsinki) for realistic local time
-
-        for idx, (cal, start) in enumerate(_calendar_dates(days)):
-            # Daily summary
-            steps = 6000 + int(3000 * math.sin(idx / 4)) + rng.randint(-800, 800)
-            steps = max(0, steps)
+        for idx, (cal, start) in enumerate(_dates(days)):
+            steps = max(0, 6000 + int(3000 * math.sin(idx / 4)) + rng.randint(-800, 800))
             rhr = 50 + int(4 * math.sin(idx / 7)) + rng.randint(-2, 2)
             repo.upsert_daily(
                 {
@@ -62,7 +52,9 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                     "floors_climbed_goal": 10,
                     "active_kilocalories": 300 + rng.randint(0, 500),
                     "bmr_kilocalories": 1600,
+                    "total_kilocalories": 1900 + rng.randint(0, 600),
                     "active_time_seconds": rng.randint(1800, 7200),
+                    "sleeping_seconds": rng.randint(20000, 30000),
                     "moderate_intensity_seconds": rng.randint(0, 2400),
                     "vigorous_intensity_seconds": rng.randint(0, 1800),
                     "intensity_goal_seconds": 9000,
@@ -70,6 +62,7 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                     "max_hr_bpm": 140 + rng.randint(0, 40),
                     "average_hr_bpm": 68 + rng.randint(-4, 6),
                     "resting_hr_bpm": rhr,
+                    "resting_hr_7d_avg": rhr + 2,
                     "avg_stress_level": 30 + rng.randint(-10, 25),
                     "max_stress_level": 70 + rng.randint(0, 25),
                     "stress_duration_seconds": rng.randint(3600, 20000),
@@ -78,17 +71,24 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                     "low_stress_duration_seconds": rng.randint(1800, 9000),
                     "medium_stress_duration_seconds": rng.randint(600, 6000),
                     "high_stress_duration_seconds": rng.randint(0, 2400),
-                    "stress_qualifier": rng.choice(["calm", "balanced", "stressful"]),
+                    "stress_qualifier": rng.choice(["CALM", "BALANCED", "STRESSFUL"]),
+                    "body_battery_charged": rng.randint(40, 90),
+                    "body_battery_drained": rng.randint(40, 90),
+                    "body_battery_high": rng.randint(70, 100),
+                    "body_battery_low": rng.randint(5, 30),
+                    "body_battery_most_recent": rng.randint(20, 80),
+                    "avg_spo2": round(95 + rng.uniform(-2, 2), 1),
+                    "lowest_spo2": rng.randint(85, 92),
+                    "avg_waking_respiration": round(14 + rng.uniform(-1, 2), 1),
+                    "highest_respiration": round(20 + rng.uniform(0, 4), 1),
+                    "lowest_respiration": round(8 + rng.uniform(-2, 2), 1),
                 }
             )
             count += 1
 
-            # Sleep
             total = rng.randint(6 * 3600, 8 * 3600)
             deep = int(total * rng.uniform(0.12, 0.2))
             rem = int(total * rng.uniform(0.18, 0.25))
-            awake = rng.randint(300, 2400)
-            light = total - deep - rem
             repo.upsert_sleep(
                 {
                     "summary_id": f"sleep-{cal}",
@@ -98,20 +98,23 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                     "duration_seconds": total,
                     "unmeasurable_seconds": 0,
                     "deep_seconds": deep,
-                    "light_seconds": light,
+                    "light_seconds": total - deep - rem,
                     "rem_seconds": rem,
-                    "awake_seconds": awake,
+                    "awake_seconds": rng.randint(300, 2400),
                     "total_nap_seconds": 0,
                     "overall_score_value": 65 + rng.randint(0, 30),
                     "overall_score_qualifier": rng.choice(["FAIR", "GOOD", "EXCELLENT"]),
                     "avg_sleep_respiration": round(13 + rng.uniform(-1, 2), 1),
                     "avg_sleep_spo2": round(95 + rng.uniform(-2, 2), 1),
-                    "validation": "ENHANCED_FINAL",
+                    "lowest_spo2": rng.randint(85, 92),
+                    "avg_sleep_stress": round(15 + rng.uniform(-5, 10), 1),
+                    "avg_sleep_hr": round(52 + rng.uniform(-4, 6), 1),
+                    "awake_count": rng.randint(0, 3),
+                    "validation": "enhanced_confirmed_final",
                 }
             )
             count += 1
 
-            # HRV
             base = 42 + int(6 * math.sin(idx / 9))
             repo.upsert_hrv(
                 {
@@ -130,46 +133,30 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
             )
             count += 1
 
-            # Stress summary + body battery series (hourly)
-            repo.upsert_stress(
-                {
-                    "summary_id": f"stress-{cal}",
-                    "calendar_date": cal,
-                    "start_time_seconds": start,
-                    "start_time_offset_seconds": offset,
-                    "duration_seconds": 86400,
-                    "body_battery_level": "MODERATE",
-                }
-            )
             bb = []
             level = rng.randint(30, 60)
             for h in range(24):
-                off = h * 3600
-                # recharge overnight, drain daytime
                 level += (4 if h < 7 else -2) + rng.randint(-3, 3)
                 level = max(5, min(100, level))
-                bb.append(
-                    {"calendar_date": cal, "offset_seconds": off, "body_battery_value": level}
-                )
+                bb.append({"calendar_date": cal, "offset_seconds": h * 3600, "body_battery_value": level})
             repo.replace_body_battery_samples(cal, bb)
             count += 1
 
-        # A handful of mock activities with simple tracks
-        types = ["RUNNING", "CYCLING", "WALKING", "LAP_SWIMMING", "STRENGTH_TRAINING"]
+        types = ["running", "cycling", "walking", "lap_swimming", "strength_training"]
         for i in range(12):
             start = int(time.time()) - i * 2 * _DAY - rng.randint(0, _DAY)
             atype = types[i % len(types)]
             dur = rng.randint(1200, 5400)
-            dist = dur * rng.uniform(2.2, 4.5) if atype != "STRENGTH_TRAINING" else None
+            dist = dur * rng.uniform(2.2, 4.5) if atype != "strength_training" else None
             sid = f"mock-activity-{i}"
             repo.upsert_activity(
                 {
                     "summary_id": sid,
                     "activity_id": str(100000 + i),
                     "activity_type": atype,
-                    "activity_name": f"{atype.title().replace('_', ' ')} session",
+                    "activity_name": f"{atype.replace('_', ' ').title()} session",
                     "start_time_seconds": start,
-                    "start_time_offset_seconds": 10800,
+                    "start_time_offset_seconds": offset,
                     "duration_seconds": dur,
                     "distance_meters": dist,
                     "active_kilocalories": rng.randint(150, 900),
@@ -178,26 +165,25 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                     "avg_speed_mps": (dist / dur) if dist else None,
                     "max_speed_mps": (dist / dur * 1.4) if dist else None,
                     "avg_pace_min_per_km": (dur / 60) / (dist / 1000) if dist else None,
-                    "avg_run_cadence_spm": rng.randint(150, 180) if atype == "RUNNING" else None,
-                    "max_run_cadence_spm": rng.randint(180, 195) if atype == "RUNNING" else None,
-                    "avg_bike_cadence_rpm": rng.randint(70, 95) if atype == "CYCLING" else None,
+                    "avg_run_cadence_spm": rng.randint(150, 180) if atype == "running" else None,
+                    "max_run_cadence_spm": rng.randint(180, 195) if atype == "running" else None,
+                    "avg_bike_cadence_rpm": rng.randint(70, 95) if atype == "cycling" else None,
                     "avg_swim_cadence_spm": None,
                     "total_elevation_gain_m": rng.randint(0, 300) if dist else None,
                     "total_elevation_loss_m": rng.randint(0, 300) if dist else None,
                     "starting_latitude": 60.17 + rng.uniform(-0.05, 0.05) if dist else None,
                     "starting_longitude": 24.94 + rng.uniform(-0.05, 0.05) if dist else None,
-                    "steps": rng.randint(3000, 9000) if atype in ("RUNNING", "WALKING") else None,
+                    "steps": rng.randint(3000, 9000) if atype in ("running", "walking") else None,
                     "device_name": "Mock Forerunner",
                     "is_parent": 0,
                     "parent_summary_id": None,
                     "manual": 0,
+                    "has_fit": 1,  # mock: nothing to download, keep autosync away
                 }
             )
-            # time series with GPS for distance-based types
             if dist:
                 samples = []
-                lat = 60.17
-                lon = 24.94
+                lat, lon = 60.17, 24.94
                 for s in range(0, dur, 10):
                     frac = s / dur
                     lat += rng.uniform(-0.0003, 0.0004)
@@ -212,8 +198,8 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                             "elevation_meters": 20 + 15 * math.sin(frac * 6) + rng.uniform(-2, 2),
                             "heart_rate_bpm": int(120 + 30 * frac + rng.randint(-5, 5)),
                             "speed_mps": (dist / dur) * (0.8 + 0.4 * rng.random()),
-                            "cadence": rng.randint(150, 180) if atype == "RUNNING" else rng.randint(70, 95),
-                            "power_watts": rng.randint(150, 320) if atype == "CYCLING" else None,
+                            "cadence": rng.randint(150, 180) if atype == "running" else rng.randint(70, 95),
+                            "power_watts": rng.randint(150, 320) if atype == "cycling" else None,
                             "distance_meters": dist * frac,
                             "temperature_celsius": round(12 + rng.uniform(-2, 3), 1),
                             "source": "fit",
@@ -222,11 +208,6 @@ def load_mock_fixtures(settings: Settings, days: int = 45) -> int:
                 repo.replace_activity_samples(sid, samples)
             count += 1
 
-        repo.update_sync_state("dailies", int(time.time()))
-        repo.update_sync_state("sleeps", int(time.time()))
-        repo.update_sync_state("hrv", int(time.time()))
-        repo.update_sync_state("stress", int(time.time()))
-        repo.update_sync_state("activities", int(time.time()))
         repo.finish_sync_run(run_id, "success", count, "MOCK DATA (development fixtures)")
         repo.commit()
         return count

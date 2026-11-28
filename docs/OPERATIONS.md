@@ -45,6 +45,16 @@ automatically.
 
 ## Scheduled sync
 
+### Built-in auto-sync (default)
+
+`python -m app.server` runs its own background sync every `AUTO_SYNC_MINUTES`
+minutes (default `60`; `0` disables it). Garmin returns HTTP 429 under load, so
+do not lower this much. `python -m app.scheduler` (Option A) is a **separate**
+process and should NOT be run together with the server's auto-sync: set
+`AUTO_SYNC_MINUTES=0` if you use it or cron. As a safety net every sync takes a
+non-blocking lock file (`<database>.sync.lock`, next to the DB), so overlapping
+syncs are skipped rather than run twice, but running both is still pointless.
+
 ### Option A — built-in scheduler
 
 ```bash

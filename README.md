@@ -80,11 +80,12 @@ mappings, [`docs/SECURITY.md`](docs/SECURITY.md) for the security model, and
 cp .env.example .env
 # Edit .env and set at least:
 #   GARMIN_PERSONAL_API_KEY=...        your key
-#   SYNC_API_TOKEN=...                 a long random string (protects sync)
+#   SYNC_API_TOKEN=...                 optional; leave blank for localhost-only use
 #   APP_ENV=production
 ```
 
-Generate a sync token:
+`SYNC_API_TOKEN` is optional. With the default localhost-only bind you can leave it
+blank. Set it if the app is reachable by others (see `docs/SECURITY.md`). To generate one:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -138,13 +139,15 @@ reverse proxy as the API. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## 6. Keep it in sync
 
-Trigger a sync anytime from the UI ("Sync now", requires your sync token) or:
+Trigger a sync anytime from the UI ("Sync now", asks for the sync token only if you set one) or:
 
 ```bash
 python -m app.cli sync           # incremental since last successful sync
 ```
 
-For automatic periodic sync on a self-hosted box:
+The web server already syncs in the background every `AUTO_SYNC_MINUTES` minutes
+(default 60, `0` disables it), so no extra scheduler is needed. Only if you set
+`AUTO_SYNC_MINUTES=0` and want the server-less alternative:
 
 ```bash
 python -m app.scheduler --interval-hours 6 --run-now
@@ -157,7 +160,8 @@ python -m app.scheduler --interval-hours 6 --run-now
 
 ## Development mode & mock data
 
-For UI work without real credentials:
+For UI work without real credentials. **`load-fixtures` writes to `DATABASE_PATH`, so
+point it at a throwaway DB** (see `AGENTS.md`), or it will put mock rows in your real database:
 
 ```bash
 cd backend && source .venv/bin/activate

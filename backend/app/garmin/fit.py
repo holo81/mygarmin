@@ -57,11 +57,41 @@ def _num(v: Any) -> float | None:
         return None
 
 
-def parse_fit_records(fit_bytes: bytes) -> list[dict[str, Any]]:
+def extract_fit_from_zip(data: bytes) -> bytes:
+    """The Personal API download-service returns a ZIP containing the .FIT.
+
+    If ``data`` is a zip, return the first .fit entry's bytes; otherwise assume
+    ``data`` is already a raw FIT file and return it unchanged.
+    """
+    import io
+    import zipfile
+
+    if len(data) >= 4 and data[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            fit_names = [n for n in zf.namelist() if n.lower().endswith(".fit")]
+            name = fit_names[0] if fit_names else (zf.namelist()[0] if zf.namelist() else None)
+            if name is None:
+                return b""
+            return zf.read(name)
+    return data
+
+
+def _per_leg_cadence(activity_type: str | None) -> bool:
+    t = (activity_type or "").lower()
+    return "run" in t or "walk" in t
+
+
+def parse_fit_records(
+    fit_bytes: bytes, activity_type: str | None = None
+) -> list[dict[str, Any]]:
     """Parse a FIT file's record messages into normalized sample dicts.
 
-    Returns an empty list (not an error) when the file has no record messages,
-    so callers can treat "no time series" gracefully.
+    Accepts either a raw .FIT file or a ZIP archive containing one (the Personal
+    API download-service returns a zip). For running/walking ``activity_type`` the FIT
+    cadence is per-leg, so it is doubled (incl. fractional_cadence) to match the
+    steps-per-minute figure Garmin reports. Returns an empty list (not an error)
+    when there are no record messages, so callers treat "no time series"
+    gracefully.
     """
     try:
         from garmin_fit_sdk import Decoder, Stream
@@ -70,6 +100,9 @@ def parse_fit_records(fit_bytes: bytes) -> list[dict[str, Any]]:
             "garmin-fit-sdk is not installed; cannot parse FIT files"
         ) from exc
 
+    fit_bytes = extract_fit_from_zip(fit_bytes)
+    if not fit_bytes:
+        return []
     stream = Stream.from_byte_array(bytearray(fit_bytes))
     decoder = Decoder(stream)
     messages, errors = decoder.read()
@@ -79,6 +112,7 @@ def parse_fit_records(fit_bytes: bytes) -> list[dict[str, Any]]:
 
     records = messages.get("record_mesgs", []) if isinstance(messages, dict) else []
     samples: list[dict[str, Any]] = []
+    per_leg = _per_leg_cadence(activity_type)
     for i, rec in enumerate(records):
         clock = _to_unix_seconds(rec.get("timestamp"))
         lat = _semicircles_to_degrees(rec.get("position_lat"))
@@ -90,6 +124,9 @@ def parse_fit_records(fit_bytes: bytes) -> list[dict[str, Any]]:
         speed = _num(rec.get("enhanced_speed"))
         if speed is None:
             speed = _num(rec.get("speed"))
+        cadence = _num(rec.get("cadence"))
+        if per_leg and cadence is not None:
+            cadence = (cadence + (_num(rec.get("fractional_cadence")) or 0.0)) * 2
         samples.append(
             {
                 "sample_index": i,
@@ -100,7 +137,7 @@ def parse_fit_records(fit_bytes: bytes) -> list[dict[str, Any]]:
                 "elevation_meters": elevation,
                 "heart_rate_bpm": int(rec["heart_rate"]) if rec.get("heart_rate") is not None else None,
                 "speed_mps": speed,
-                "cadence": _num(rec.get("cadence")),
+                "cadence": cadence,
                 "power_watts": _num(rec.get("power")),
                 "distance_meters": _num(rec.get("distance")),
                 "temperature_celsius": _num(rec.get("temperature")),

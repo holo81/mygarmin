@@ -19,7 +19,7 @@ def settings(tmp_path) -> Settings:
         APP_ENV="production",
         SYNC_API_TOKEN="test-sync-token",
         INITIAL_IMPORT_DAYS=7,
-        SYNC_WINDOW_DAYS=1,
+        SYNC_DAY_DELAY_SECONDS=0,
     )
     s.ensure_dirs()
     init_db(s.database_file)

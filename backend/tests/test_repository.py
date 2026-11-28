@@ -7,28 +7,26 @@ from app.db.repository import Repository
 from tests import fixtures_api as fx
 
 
-def test_daily_upsert_is_idempotent(repo: Repository):
+def test_daily_upsert_idempotent(repo: Repository):
     row = norm.normalize_daily(fx.DAILY)
     repo.upsert_daily(row)
-    repo.upsert_daily(row)  # second time must not duplicate
+    repo.upsert_daily(row)
     repo.commit()
-    rows = repo.daily_range("2026-02-01", "2026-02-28")
+    rows = repo.daily_range("2026-10-01", "2026-10-31")
     assert len(rows) == 1
-    assert rows[0]["steps"] == 12543
+    assert rows[0]["steps"] == 4433
 
 
-def test_daily_upsert_updates_changed_values(repo: Repository):
+def test_daily_upsert_updates(repo: Repository):
     row = norm.normalize_daily(fx.DAILY)
     repo.upsert_daily(row)
     repo.commit()
     updated = dict(row)
-    updated["steps"] = 13000
+    updated["steps"] = 9999
     repo.upsert_daily(updated)
     repo.commit()
-    rows = repo.daily_range("2026-02-01", "2026-02-28")
-    assert len(rows) == 1
-    assert rows[0]["steps"] == 13000
-    # first_seen_at preserved, updated_at advanced
+    rows = repo.daily_range("2026-10-01", "2026-10-31")
+    assert len(rows) == 1 and rows[0]["steps"] == 9999
     assert rows[0]["first_seen_at"] is not None
 
 
@@ -38,49 +36,66 @@ def test_activity_upsert_idempotent(repo: Repository):
     repo.upsert_activity(row)
     repo.commit()
     assert repo.count_activities() == 1
-    got = repo.activity("x111-act-1")
-    assert got is not None
-    assert got["activity_type"] == "RUNNING"
+    got = repo.activity("24734466614")
+    assert got["activity_type"] == "strength_training"
 
 
 def test_activity_samples_replace_not_append(repo: Repository):
     repo.upsert_activity(norm.normalize_activity(fx.ACTIVITY))
-    samples = norm.normalize_activity_samples(fx.ACTIVITY_DETAILS)
-    repo.replace_activity_samples("x111-act-1", samples)
-    repo.replace_activity_samples("x111-act-1", samples)  # again
+    samples = [
+        {
+            "sample_index": 0,
+            "offset_seconds": 0,
+            "clock_time_seconds": 1000,
+            "latitude": None,
+            "longitude": None,
+            "elevation_meters": None,
+            "heart_rate_bpm": 100,
+            "speed_mps": None,
+            "cadence": None,
+            "power_watts": None,
+            "distance_meters": None,
+            "temperature_celsius": None,
+            "source": "fit",
+        }
+    ]
+    repo.replace_activity_samples("24734466614", samples)
+    repo.replace_activity_samples("24734466614", samples)
     repo.commit()
-    stored = repo.activity_samples("x111-act-1")
-    assert len(stored) == 2  # not 4
-    # has_details flag set
-    assert repo.activity("x111-act-1")["has_details"] == 1
-
-
-def test_sleep_stage_replacement(repo: Repository):
-    repo.upsert_sleep(norm.normalize_sleep(fx.SLEEP))
-    stages = norm.normalize_sleep_stages(fx.SLEEP)
-    repo.replace_sleep_stages("x111-sleep-1", stages)
-    repo.replace_sleep_stages("x111-sleep-1", stages)
-    repo.commit()
-    rows = repo.conn.execute(
-        "SELECT COUNT(*) AS c FROM sleep_stages WHERE sleep_summary_id = ?",
-        ("x111-sleep-1",),
-    ).fetchone()
-    assert rows["c"] == 3
+    stored = repo.activity_samples("24734466614")
+    assert len(stored) == 1
+    assert repo.activity("24734466614")["has_details"] == 1
 
 
 def test_body_battery_samples_round_trip(repo: Repository):
-    repo.upsert_stress(norm.normalize_stress(fx.STRESS))
-    bb = norm.normalize_body_battery_samples(fx.STRESS)
-    repo.replace_body_battery_samples("2026-02-08", bb)
+    cal, samples = norm.normalize_body_battery_report(fx.BODY_BATTERY_REPORT[0])
+    repo.replace_body_battery_samples(cal, samples)
     repo.commit()
-    rows = repo.body_battery_for_date("2026-02-08")
-    assert [r["body_battery_value"] for r in rows] == [60, 58, 55]
+    rows = repo.body_battery_for_date(cal)
+    assert [r["body_battery_value"] for r in rows] == [27, 91, 86]
+    assert repo.latest_body_battery_date() == "2026-10-20"
 
 
-def test_sync_state_tracks_progress(repo: Repository):
-    repo.update_sync_state("dailies", 1675918800)
+def test_daily_hr_samples_round_trip(repo: Repository):
+    samples = norm.normalize_daily_hr_samples(fx.DAILY_HEART_RATE)
+    repo.replace_daily_hr_samples("2026-10-21", samples)
     repo.commit()
-    st = repo.get_sync_state("dailies")
-    assert st is not None
-    assert st["last_synced_through"] == 1675918800
-    assert st["last_success_at"] is not None
+    n = repo.conn.execute(
+        "SELECT COUNT(*) AS c FROM daily_hr_samples WHERE calendar_date='2026-10-21'"
+    ).fetchone()["c"]
+    assert n == 3
+
+
+def test_hrv_upsert(repo: Repository):
+    repo.upsert_hrv(norm.normalize_hrv(fx.HRV))
+    repo.commit()
+    h = repo.latest_hrv()
+    assert h["status"] == "BALANCED"
+    assert h["last_night_avg_ms"] == 63.0
+
+
+def test_sync_state(repo: Repository):
+    repo.update_sync_state("daily", 1792000000)
+    repo.commit()
+    st = repo.get_sync_state("daily")
+    assert st["last_synced_through"] == 1792000000

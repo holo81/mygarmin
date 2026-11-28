@@ -8,6 +8,7 @@ with the latest payload while remaining idempotent.
 
 from __future__ import annotations
 
+import functools
 import sqlite3
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +16,24 @@ from typing import Any
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _atomic(fn):
+    """Run a DELETE-then-INSERT helper in a SAVEPOINT so a failure keeps the old rows."""
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self.conn.execute("SAVEPOINT replace_op")
+        try:
+            result = fn(self, *args, **kwargs)
+        except BaseException:
+            self.conn.execute("ROLLBACK TO replace_op")
+            self.conn.execute("RELEASE replace_op")
+            raise
+        self.conn.execute("RELEASE replace_op")
+        return result
+
+    return wrapper
 
 
 class Repository:
@@ -30,6 +49,7 @@ class Repository:
         *,
         key_cols: list[str],
         timestamps: bool = True,
+        keep_existing: bool = False,
     ) -> None:
         """Insert or update ``row`` keyed on ``key_cols``.
 
@@ -56,7 +76,10 @@ class Repository:
             placeholders = ", ".join(["?"] * len(insert_cols))
 
         update_cols = [c for c in cols if c not in key_cols]
-        update_clause = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
+        if keep_existing:  # a partial payload must not blank stored values
+            update_clause = ", ".join(f"{c}=COALESCE(excluded.{c}, {c})" for c in update_cols)
+        else:
+            update_clause = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
         conflict_cols = ", ".join(key_cols)
 
         sql = (
@@ -82,6 +105,12 @@ class Repository:
         byte_size: int,
         sync_run_id: int | None,
     ) -> int:
+        existing = self.conn.execute(
+            "SELECT id FROM raw_payloads WHERE category = ? AND sha256 = ? LIMIT 1",
+            (category, sha256),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
         cur = self.conn.execute(
             """
             INSERT INTO raw_payloads
@@ -109,6 +138,7 @@ class Repository:
             data["raw_payload_id"] = raw_payload_id
         self._upsert("activities", data, key_cols=["summary_id"])
 
+    @_atomic
     def replace_activity_samples(
         self, activity_summary_id: str, samples: list[dict[str, Any]]
     ) -> None:
@@ -141,12 +171,36 @@ class Repository:
             (fit_file_path, summary_id),
         )
 
+    def mark_fit_unavailable(self, summary_id: str) -> None:
+        self.conn.execute(
+            "UPDATE activities SET fit_unavailable = 1 WHERE summary_id = ?", (summary_id,)
+        )
+
+    def activities_needing_fit(
+        self, *, limit: int, start_time: int | None = None, end_time: int | None = None
+    ) -> list[sqlite3.Row]:
+        clauses = ["COALESCE(has_fit, 0) = 0", "COALESCE(fit_unavailable, 0) = 0"]
+        params: list[Any] = []
+        if start_time is not None:
+            clauses.append("start_time_seconds >= ?")
+            params.append(start_time)
+        if end_time is not None:
+            clauses.append("start_time_seconds <= ?")
+            params.append(end_time)
+        params.append(limit)
+        return self.conn.execute(
+            f"SELECT * FROM activities WHERE {' AND '.join(clauses)}"
+            " ORDER BY start_time_seconds DESC LIMIT ?",
+            params,
+        ).fetchall()
+
     def upsert_daily(self, row: dict[str, Any], raw_payload_id: int | None = None) -> None:
         data = dict(row)
         if raw_payload_id is not None:
             data["raw_payload_id"] = raw_payload_id
-        self._upsert("daily_summaries", data, key_cols=["summary_id"])
+        self._upsert("daily_summaries", data, key_cols=["summary_id"], keep_existing=True)
 
+    @_atomic
     def replace_daily_hr_samples(self, calendar_date: str, samples: list[dict[str, Any]]) -> None:
         self.conn.execute(
             "DELETE FROM daily_hr_samples WHERE calendar_date = ?", (calendar_date,)
@@ -161,8 +215,9 @@ class Repository:
         data = dict(row)
         if raw_payload_id is not None:
             data["raw_payload_id"] = raw_payload_id
-        self._upsert("sleep_summaries", data, key_cols=["summary_id"])
+        self._upsert("sleep_summaries", data, key_cols=["summary_id"], keep_existing=True)
 
+    @_atomic
     def replace_sleep_stages(self, sleep_summary_id: str, stages: list[dict[str, Any]]) -> None:
         self.conn.execute(
             "DELETE FROM sleep_stages WHERE sleep_summary_id = ?", (sleep_summary_id,)
@@ -179,6 +234,7 @@ class Repository:
             data["raw_payload_id"] = raw_payload_id
         self._upsert("stress_summaries", data, key_cols=["summary_id"])
 
+    @_atomic
     def replace_stress_samples(self, calendar_date: str, samples: list[dict[str, Any]]) -> None:
         self.conn.execute(
             "DELETE FROM stress_samples WHERE calendar_date = ?", (calendar_date,)
@@ -189,6 +245,7 @@ class Repository:
             samples,
         )
 
+    @_atomic
     def replace_body_battery_samples(
         self, calendar_date: str, samples: list[dict[str, Any]]
     ) -> None:
@@ -205,7 +262,65 @@ class Repository:
         data = dict(row)
         if raw_payload_id is not None:
             data["raw_payload_id"] = raw_payload_id
-        self._upsert("hrv_summaries", data, key_cols=["summary_id"])
+        self._upsert("hrv_summaries", data, key_cols=["summary_id"], keep_existing=True)
+
+    @_atomic
+    def replace_hr_zones(self, zones: list[dict[str, Any]]) -> None:
+        """HR zones are current configuration; replace the whole set each sync."""
+        self.conn.execute("DELETE FROM heart_rate_zones")
+        now = _utc_now_iso()
+        self.conn.executemany(
+            """
+            INSERT INTO heart_rate_zones
+                (sport, training_method, resting_hr_used, lactate_threshold_hr_used,
+                 max_hr_used, zone1_floor, zone2_floor, zone3_floor, zone4_floor,
+                 zone5_floor, updated_at)
+            VALUES
+                (:sport, :training_method, :resting_hr_used, :lactate_threshold_hr_used,
+                 :max_hr_used, :zone1_floor, :zone2_floor, :zone3_floor, :zone4_floor,
+                 :zone5_floor, :updated_at)
+            """,
+            [{**z, "updated_at": now} for z in zones],
+        )
+
+    def hr_zones(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM heart_rate_zones ORDER BY sport").fetchall()
+
+    def hr_zones_for_sport(self, sport: str) -> sqlite3.Row | None:
+        row = self.conn.execute(
+            "SELECT * FROM heart_rate_zones WHERE sport = ?", (sport,)
+        ).fetchone()
+        if row is None:
+            row = self.conn.execute(
+                "SELECT * FROM heart_rate_zones WHERE sport = 'DEFAULT'"
+            ).fetchone()
+        return row
+
+    def upsert_fitness_age(self, row: dict[str, Any], raw_payload_id: int | None = None) -> None:
+        data = dict(row)
+        if raw_payload_id is not None:
+            data["raw_payload_id"] = raw_payload_id
+        self._upsert("fitness_age", data, key_cols=["calendar_date"])
+
+    def latest_fitness_age(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM fitness_age ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
+
+    def upsert_weight(self, row: dict[str, Any]) -> None:
+        self._upsert("weight_measurements", row, key_cols=["calendar_date"], keep_existing=True)
+
+    def weight_range(self, start_date: str, end_date: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM weight_measurements WHERE calendar_date BETWEEN ? AND ?"
+            " ORDER BY calendar_date ASC",
+            (start_date, end_date),
+        ).fetchall()
+
+    def latest_weight(self) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM weight_measurements ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
 
     # -- sync bookkeeping --------------------------------------------------
 
@@ -255,7 +370,8 @@ class Repository:
             VALUES (?, ?, ?)
             ON CONFLICT(category) DO UPDATE SET
                 last_success_at=excluded.last_success_at,
-                last_synced_through=excluded.last_synced_through
+                last_synced_through=MAX(COALESCE(last_synced_through, 0),
+                                        excluded.last_synced_through)
             """,
             (category, _utc_now_iso(), synced_through),
         )
@@ -307,6 +423,12 @@ class Repository:
         return self.conn.execute(
             "SELECT * FROM stress_summaries ORDER BY calendar_date DESC LIMIT 1"
         ).fetchone()
+
+    def latest_body_battery_date(self) -> str | None:
+        row = self.conn.execute(
+            "SELECT calendar_date FROM body_battery_samples ORDER BY calendar_date DESC LIMIT 1"
+        ).fetchone()
+        return row["calendar_date"] if row else None
 
     def body_battery_for_date(self, calendar_date: str) -> list[sqlite3.Row]:
         return self.conn.execute(
@@ -422,3 +544,6 @@ class Repository:
 
     def commit(self) -> None:
         self.conn.commit()
+
+    def rollback(self) -> None:
+        self.conn.rollback()
