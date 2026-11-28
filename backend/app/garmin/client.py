@@ -2,8 +2,8 @@
 
 Responsibilities:
   * Obtain & attach a valid OAuth2 access token (via TokenManager).
-  * Issue pull requests to the configured Health/Activity resource paths using
-    the documented ``uploadStartTimeInSeconds`` / ``uploadEndTimeInSeconds`` window.
+  * Issue pull requests to the configured Personal API resource paths using
+    the endpoint-specific calendar-date range parameters.
   * Download ``.FIT`` activity files.
   * Classify responses into typed errors and retry only transient failures.
 
@@ -11,7 +11,8 @@ Design notes:
   * Delivery is PULL-only for the Personal API, so this client only issues GET
     requests for data (plus the POST for the token).
   * All credentials stay server-side. Nothing here is exposed to the frontend.
-  * Time windows use Unix seconds (UTC), matching the documented API contract.
+  * The sync engine uses Unix-second windows internally and converts them to
+    local calendar dates for the Personal API.
 """
 
 from __future__ import annotations
@@ -19,7 +20,9 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -111,11 +114,36 @@ class GarminClient:
         if category not in paths:
             raise GarminResponseError(f"Unknown resource category: {category}")
         path = paths[category]
-        url = self._settings.garmin_api_base_url.rstrip("/") + path
-        params: dict[str, Any] = {
-            "uploadStartTimeInSeconds": int(start_time),
-            "uploadEndTimeInSeconds": int(end_time),
-        }
+        try:
+            local_tz = ZoneInfo(self._settings.display_timezone)
+        except ZoneInfoNotFoundError:
+            local_tz = UTC
+        start_date = datetime.fromtimestamp(int(start_time), local_tz).date().isoformat()
+        end_date = datetime.fromtimestamp(max(int(start_time), int(end_time) - 1), local_tz)
+        end_date = end_date.date().isoformat()
+
+        base_url = self._settings.garmin_api_base_url.rstrip("/")
+        params: dict[str, Any]
+        if category in ("stress", "hrv"):
+            url = f"{base_url}{path.rstrip('/')}/{start_date}/{end_date}"
+            params = {}
+        elif category in ("dailies", "sleeps"):
+            url = base_url + path
+            params = {"startDate": start_date, "endDate": end_date}
+        elif category == "activities":
+            url = base_url + path
+            params = {
+                "start": 0,
+                "limit": 1000,
+                "startDate": start_date,
+                "endDate": end_date,
+            }
+        else:
+            url = base_url + path
+            params = {
+                "uploadStartTimeInSeconds": int(start_time),
+                "uploadEndTimeInSeconds": int(end_time),
+            }
         if extra_params:
             params.update(extra_params)
 

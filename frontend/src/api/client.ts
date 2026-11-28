@@ -46,7 +46,7 @@ export const api = {
   triggerSync: (token: string, params: string) =>
     request<unknown>(`/api/sync?${params}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     }),
 };
 

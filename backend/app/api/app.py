@@ -66,10 +66,7 @@ def require_sync_token(authorization: str | None = Header(default=None)) -> None
     settings = get_settings()
     expected = settings.sync_api_token.strip()
     if not expected:
-        raise HTTPException(
-            status_code=503,
-            detail="Sync is disabled: SYNC_API_TOKEN is not configured on the server.",
-        )
+        return
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     provided = authorization.split(" ", 1)[1].strip()

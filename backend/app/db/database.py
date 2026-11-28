@@ -22,7 +22,10 @@ def _utc_now_iso() -> str:
 def connect(db_path: Path) -> sqlite3.Connection:
     """Open a connection with sane pragmas and row access by name."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    # FastAPI may create a synchronous dependency in one worker thread and run
+    # its synchronous endpoint in another. Each request owns its connection,
+    # so allow that connection to cross the setup/handler thread boundary.
+    conn = sqlite3.connect(str(db_path), timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")

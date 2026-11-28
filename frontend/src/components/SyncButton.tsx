@@ -2,10 +2,8 @@ import { useState } from "react";
 import { api, ApiError } from "../api/client";
 
 /**
- * Triggers a manual sync. The sync token is required by the backend and is
- * entered by the user (stored only in-memory / sessionStorage, never bundled).
- * This keeps the mutating operation protected even if the app is reachable on
- * the LAN.
+ * Triggers a manual sync. A token is optional; when the server requires one,
+ * the user can enter it and it is kept only in sessionStorage.
  */
 export function SyncButton({ onDone }: { onDone?: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -14,20 +12,16 @@ export function SyncButton({ onDone }: { onDone?: () => void }) {
   const [token, setToken] = useState(() => sessionStorage.getItem("sync-token") ?? "");
 
   async function run() {
-    if (!token) {
-      setShowToken(true);
-      return;
-    }
     setBusy(true);
     setMsg(null);
-    sessionStorage.setItem("sync-token", token);
+    if (token) sessionStorage.setItem("sync-token", token);
     try {
       await api.triggerSync(token, "");
       setMsg("Sync complete");
       onDone?.();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        setMsg("Invalid sync token");
+        setMsg("A valid sync token is required");
         setShowToken(true);
       } else if (e instanceof ApiError && e.status === 409) {
         setMsg("A sync is already running");

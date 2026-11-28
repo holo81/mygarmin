@@ -188,6 +188,7 @@ a {
 }
 
 .card {
+  min-width: 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -418,4 +419,6 @@ a {
   .nav-link span.txt { display: none; }
   .nav-link { padding: 10px; }
   .content { padding: 18px 16px 50px; }
+  .grid.two { grid-template-columns: minmax(0, 1fr); }
+  .chart-wrap { min-width: 0; }
 }

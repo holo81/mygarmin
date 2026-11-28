@@ -39,26 +39,27 @@ this app issues GET requests over time windows rather than running a webhook.
 
 ## Resource paths (configurable)
 
-The Personal API wraps Garmin's Health/Wellness REST API and Activity API. Those
-services use `…/wellness-api/rest/<resource>` with a UTC time window:
+The client follows Garmin's current [Personal API Swagger](https://developer.garmin.com/gc-developer-program/personal/swagger-docs/).
+The sync engine keeps Unix-second windows internally, then sends the date format
+and timezone expected by each endpoint:
 
 ```
-GET <base>/wellness-api/rest/activities?uploadStartTimeInSeconds=<s>&uploadEndTimeInSeconds=<e>
-GET <base>/wellness-api/rest/activityDetails?uploadStartTimeInSeconds=<s>&uploadEndTimeInSeconds=<e>
-GET <base>/wellness-api/rest/activityFile?id=<id>&token=<fileToken>
+GET <base>/usersummary-service/v2/dailysummaries?startDate=<date>&endDate=<date>
+GET <base>/sleep-service/sleep/dailySleepSummariesByDate?startDate=<date>&endDate=<date>
+GET <base>/usersummary-service/stats/stress/daily/<startDate>/<endDate>
+GET <base>/hrv-service/hrv/daily/<startDate>/<endDate>
+GET <base>/activitylist-service/activities/search/activities?start=0&limit=1000&startDate=<date>&endDate=<date>
 ```
 
-The full set of Personal API resource paths is published in Garmin's
-**login-gated** Personal API Swagger, which can't be read without an account.
-To avoid guessing, every path is **configuration-driven** via `GARMIN_PATH_*` in
-`.env` (defaults follow the documented `wellness-api` model). If a path returns
-404, the client raises a clear error telling you to adjust the matching
-`GARMIN_PATH_*` to your account's Swagger. The base host is `GARMIN_API_BASE_URL`
-(default `https://personal.connectapi.garmin.com`).
+Dates use the configured display timezone. Paths can be overridden via
+`GARMIN_PATH_*` in `.env`; the base host is `GARMIN_API_BASE_URL` (default
+`https://personal.connectapi.garmin.com`). The normalizer maps current Personal
+API response fields into the local schema.
 
 Logical categories (see `Settings.resource_paths()`): `dailies`, `sleeps`,
 `stress`, `hrv`, `respiration`, `pulseox`, `activities`, `activity_details`,
-`activity_file`.
+`activity_file`. The standard sync imports daily summaries, sleep, stress, HRV,
+and activity summaries.
 
 ## Verified JSON schemas → local columns
 
