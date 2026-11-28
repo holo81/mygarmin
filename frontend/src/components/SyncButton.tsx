@@ -1,42 +1,73 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
+import type { SyncRun } from "../api/types";
+import { timeAgo } from "../lib/format";
+
+/** Polls /api/meta; calls onNew when a sync (e.g. the backend's auto sync) lands. */
+function useLastSync(onNew?: () => void): [SyncRun | null, () => Promise<void>] {
+  const [last, setLast] = useState<SyncRun | null>(null);
+  const seen = useRef<number | null>(null);
+  const poll = useRef<(notify: boolean) => Promise<void>>(async () => {});
+  poll.current = (notify) =>
+    api.meta().then((m) => {
+      const run = m.lastSync;
+      if (notify && run?.finished_at && seen.current !== null && run.id !== seen.current) onNew?.();
+      if (run?.finished_at) seen.current = run.id;
+      setLast(run);
+    }, () => {});
+  useEffect(() => {
+    poll.current(true);
+    const t = setInterval(() => poll.current(true), 30_000); // also re-renders the "x min ago" label
+    return () => clearInterval(t);
+  }, []);
+  // Record the run a manual sync just produced, so the poller does not report it again.
+  return [last, () => poll.current(false)];
+}
 
 /**
- * Triggers a manual sync. The sync token is required by the backend and is
- * entered by the user (stored only in-memory / sessionStorage, never bundled).
- * This keeps the mutating operation protected even if the app is reachable on
- * the LAN.
+ * Triggers a manual sync. If the server has SYNC_API_TOKEN set, the sync is
+ * protected and the user is prompted for the token (stored only in
+ * sessionStorage, never bundled). If the server has no token configured
+ * (typical localhost setup), sync just works with no prompt.
  */
 export function SyncButton({ onDone }: { onDone?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState(() => sessionStorage.getItem("sync-token") ?? "");
+  const [last, markSeen] = useLastSync(onDone);
+  const failed = last?.finished_at && !["success", "partial"].includes(last.status);
 
   async function run() {
-    if (!token) {
-      setShowToken(true);
-      return;
-    }
     setBusy(true);
     setMsg(null);
-    sessionStorage.setItem("sync-token", token);
     try {
-      await api.triggerSync(token, "");
-      setMsg("Sync complete");
+      // Try with whatever token we have (possibly empty). If the server is
+      // unprotected, an empty token succeeds; otherwise it returns 401/403 and
+      // we reveal the token field. The token is only stored after it was accepted.
+      const res = await api.triggerSync(token, "enrich=true");
+      if (token) sessionStorage.setItem("sync-token", token);
+      setMsg(
+        res?.status === "partial"
+          ? `Sync partly failed: ${res.message || "some categories could not be fetched"}`
+          : "Sync complete"
+      );
+      setShowToken(false);
+      await markSeen();
       onDone?.();
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-        setMsg("Invalid sync token");
+        setMsg(token ? "Invalid sync token" : "This server requires a sync token");
         setShowToken(true);
       } else if (e instanceof ApiError && e.status === 409) {
         setMsg("A sync is already running");
       } else {
+        // 5xx carries the server's message (parsed in api/client).
         setMsg(e instanceof Error ? e.message : "Sync failed");
       }
     } finally {
       setBusy(false);
-      setTimeout(() => setMsg(null), 4000);
+      setTimeout(() => setMsg(null), 8000);
     }
   }
 
@@ -45,6 +76,17 @@ export function SyncButton({ onDone }: { onDone?: () => void }) {
       <button className="btn primary" disabled={busy} onClick={run}>
         {busy ? "Syncing…" : "⟳ Sync now"}
       </button>
+      {last && (
+        <div
+          className="faint"
+          style={{ fontSize: 11, textAlign: "center", color: failed ? "var(--bad)" : undefined }}
+          title={last.finished_at ? new Date(last.finished_at).toLocaleString() : "In progress"}
+        >
+          {last.finished_at
+            ? `${failed ? "Last sync failed" : "Synced"} ${timeAgo(last.finished_at)}`
+            : "Syncing in background…"}
+        </div>
+      )}
       {showToken && (
         <input
           className="input"
