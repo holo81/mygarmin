@@ -1,160 +1,144 @@
 # Garmin Personal API — verified endpoints & field mapping
 
-This documents what was verified against official Garmin materials while building
-the client, and how raw API fields map to the local schema and the UI.
+This reflects the **real** Personal API, confirmed against the official Swagger
+(`developer.garmin.com` → Personal API Swagger Docs) and validated with live
+calls to a real account.
 
 ## Authentication (verified)
-
-Documented on the Garmin Connect Developer Program Personal API pages:
 
 ```
 POST https://personal.connectapi.garmin.com/personalapitoken-service/personal-api/personal-api-key/token
 Authorization: ApiKey <PERSONAL_API_KEY>
 ```
 
-- Returns an **OAuth2 access token**.
-- Access tokens are valid for **24 hours** or until the key expires, whichever is
-  first.
-- **No refresh tokens.** A new access token is obtained by calling the endpoint
-  again.
-- Personal API keys expire after 30 / 90 / 180 days or 1 year and are shown only
-  once at creation.
+Returns an OAuth2 access token (`access_token`, `token_type`, `expires_in`),
+valid 24h, no refresh token. Verified: a real key returns a Bearer token with
+~86400s lifetime. Implementation: `app/garmin/token.py`. The key may be supplied
+inline (`GARMIN_PERSONAL_API_KEY`) or from a file (`GARMIN_PERSONAL_API_KEY_FILE`,
+e.g. `./garmin_access.key`). Credentials are never logged.
 
-Implementation: `app/garmin/token.py` posts the `ApiKey` header, caches the
-returned token on disk (owner-only permissions), refreshes within a 5-minute
-safety margin of expiry, and treats HTTP 401/403 as **permanent** (no retry).
+## Base URL & delivery
 
-## Delivery model (verified)
+- Base: `https://personal.connectapi.garmin.com`
+- Delivery is **pull-only**. The API exposes the modern Garmin Connect service
+  routes (not the business Health API `wellness-api/rest/*` shape). Dates are
+  path segments or query params; timestamps in responses are epoch
+  **milliseconds**, with paired GMT and Local values.
 
-The Garmin Connect Developer Program overview lists the **Personal** tier as:
+## Verified endpoints (used by this app)
 
-| Data              | Format       | Delivery |
-| ----------------- | ------------ | -------- |
-| Activity data     | JSON & .FIT  | Pull     |
-| Health data       | JSON         | Pull     |
-| Women's health    | JSON         | Pull     |
+| Category | Method & path | Date params | Returns |
+| --- | --- | --- | --- |
+| Daily summary | `GET /usersummary-service/usersummary/daily` | `?calendarDate=` | one day object |
+| Sleep | `GET /sleep-service/sleep/dailySleep` | `?date=` | one sleep object |
+| HRV (day) | `GET /hrv-service/hrv/{date}` | path | summary + readings |
+| HRV (range) | `GET /hrv-service/hrv/daily/{fromDate}/{toDate}` | path | `hrvSummaries[]` |
+| Daily heart rate | `GET /wellness-service/wellness/dailyHeartRate` | `?date=` | `heartRateValues[[ms,bpm]]` |
+| Body Battery | `GET /wellness-service/wellness/bodyBattery/reports/daily` | `?startDate=&endDate=` | per-day `bodyBatteryValuesArray` |
+| Stress (range) | `GET /usersummary-service/stats/stress/daily/{fromDate}/{toDate}` | path | per-day overall stress |
+| Steps (range) | `GET /usersummary-service/stats/steps/daily/{fromDate}/{toDate}` | path | per-day steps |
+| Activities | `GET /activitylist-service/activities/search/activities` | `?start=&limit=` | activity summaries |
+| Activity detail | `GET /activity-service/activity/{activityId}` | path | `summaryDTO` + metadata |
+| Activity FIT | `GET /download-service/files/activity/{activityId}` | path | **ZIP** containing `.FIT` |
+| User profile | `GET /userprofile-service/userprofile/settings` | — | units, timezone |
 
-Business/Enterprise tiers are push-based; **Personal is pull-only**, which is why
-this app issues GET requests over time windows rather than running a webhook.
-
-## Resource paths (configurable)
-
-The Personal API wraps Garmin's Health/Wellness REST API and Activity API. Those
-services use `…/wellness-api/rest/<resource>` with a UTC time window:
-
-```
-GET <base>/wellness-api/rest/activities?uploadStartTimeInSeconds=<s>&uploadEndTimeInSeconds=<e>
-GET <base>/wellness-api/rest/activityDetails?uploadStartTimeInSeconds=<s>&uploadEndTimeInSeconds=<e>
-GET <base>/wellness-api/rest/activityFile?id=<id>&token=<fileToken>
-```
-
-The full set of Personal API resource paths is published in Garmin's
-**login-gated** Personal API Swagger, which can't be read without an account.
-To avoid guessing, every path is **configuration-driven** via `GARMIN_PATH_*` in
-`.env` (defaults follow the documented `wellness-api` model). If a path returns
-404, the client raises a clear error telling you to adjust the matching
-`GARMIN_PATH_*` to your account's Swagger. The base host is `GARMIN_API_BASE_URL`
-(default `https://personal.connectapi.garmin.com`).
-
-Logical categories (see `Settings.resource_paths()`): `dailies`, `sleeps`,
-`stress`, `hrv`, `respiration`, `pulseox`, `activities`, `activity_details`,
-`activity_file`.
+All paths are configurable via `GARMIN_PATH_*` in `.env` (with `{date}`,
+`{fromDate}`, `{toDate}`, `{activityId}` placeholders), so a future Garmin route
+change needs no code edit.
 
 ## Verified JSON schemas → local columns
 
-Field names below are the camelCase keys documented in Garmin's Health/Activity
-API specification and data-export schemas. The normalizer (`app/normalize.py`)
-reads them case-insensitively (so PascalCase export payloads also work).
+Confirmed against real responses.
 
-### Daily summary → `daily_summaries`
+### Daily (`usersummary/daily`) → `daily_summaries`
 
-| API field | Column | Notes |
-| --- | --- | --- |
-| `summaryId` | `summary_id` | natural key |
-| `calendarDate` | `calendar_date` | `yyyy-mm-dd`, UI display date |
-| `startTimeInSeconds` / `startTimeOffsetInSeconds` | `start_time_seconds` / `start_time_offset_seconds` | UTC epoch + device offset |
-| `steps`, `stepsGoal` | `steps`, `steps_goal` | |
-| `distanceInMeters` | `distance_meters` | meters (source unit) |
-| `activeKilocalories`, `bmrKilocalories` | `active_kilocalories`, `bmr_kilocalories` | |
-| `moderateIntensityDurationInSeconds`, `vigorousIntensityDurationInSeconds` | `moderate_intensity_seconds`, `vigorous_intensity_seconds` | |
-| `min/max/average/restingHeartRateInBeatsPerMinute` | `min_hr_bpm` / `max_hr_bpm` / `average_hr_bpm` / `resting_hr_bpm` | `average` is Garmin's 7-day avg |
-| `averageStressLevel`, `maxStressLevel` | `avg_stress_level`, `max_stress_level` | `-1`/`-2` = not enough data (kept, hidden by UI) |
-| `stressQualifier` | `stress_qualifier` | e.g. `balanced`, `stressful_awake` |
-| `timeOffsetHeartRateSamples` | `daily_hr_samples` | expanded to {offset→bpm} rows |
+`calendarDate`, `totalSteps`→steps, `dailyStepGoal`→steps_goal,
+`totalDistanceMeters`, `activeKilocalories`, `bmrKilocalories`,
+`totalKilocalories`, `minHeartRate`/`maxHeartRate`/`restingHeartRate`,
+`lastSevenDaysAvgRestingHeartRate`→resting_hr_7d_avg, `averageStressLevel`
+(+ `maxStressLevel`, `*StressDuration`), `stressQualifier`,
+`bodyBattery{Charged,Drained,Highest,Lowest,MostRecent}Value`,
+`averageSpo2`/`lowestSpo2`, `avgWakingRespirationValue` (+ highest/lowest),
+`moderate/vigorousIntensityMinutes` (minutes → stored as seconds),
+`sleepingSeconds`, `activeSeconds`. Device offset derived from
+`wellnessStartTimeGmt` vs `wellnessStartTimeLocal`.
 
-### Sleep → `sleep_summaries` / `sleep_stages`
+### Sleep (`sleep/dailySleep`) → `sleep_summaries`
 
-| API field | Column |
-| --- | --- |
-| `deepSleepDurationInSeconds` / `lightSleepDurationInSeconds` / `remSleepInSeconds` / `awakeDurationInSeconds` | `deep_seconds` / `light_seconds` / `rem_seconds` / `awake_seconds` |
-| `unmeasurableSleepInSeconds` | `unmeasurable_seconds` |
-| `overallSleepScore.value` / `.qualifierKey` | `overall_score_value` / `overall_score_qualifier` |
-| `validation` | `validation` (e.g. `ENHANCED_FINAL`) |
-| `sleepLevelsMap` | `sleep_stages` (stage interval rows) |
-| `timeOffsetSleepRespiration` | **derived** mean → `avg_sleep_respiration` |
-| `timeOffsetSleepSpo2` | **derived** mean → `avg_sleep_spo2` |
+`sleepTimeSeconds`→duration, `deep/light/rem/awakeSleepSeconds`,
+`unmeasurableSleepSeconds`, `napTimeSeconds`, `sleepScores.overall.{value,qualifierKey}`,
+`averageRespirationValue`, `averageSpO2Value`/`lowestSpO2Value`, `avgSleepStress`,
+`avgHeartRate`, `awakeCount`, `sleepWindowConfirmationType`→validation. Start
+time + offset from `sleepStartTimestampGMT/Local` (epoch ms).
 
-### Stress detail + Body Battery → `stress_summaries` / `stress_samples` / `body_battery_samples`
+### HRV (`hrv/{date}`, `hrv/daily/{from}/{to}`) → `hrv_summaries`
 
-| API field | Column |
-| --- | --- |
-| `bodyBatteryDynamicFeedbackEvent.bodyBatteryLevel` | `body_battery_level` |
-| `timeOffsetStressLevelValues` | `stress_samples` (value `<0` = off-wrist/motion sentinel, preserved) |
-| `timeOffsetBodyBatteryValues` | `body_battery_samples` (0–100) |
+`hrvSummary.{lastNightAvg, lastNight5MinHigh, weeklyAvg, status}` and
+`baseline.{balancedLow, balancedUpper}` → baseline low/high. The range endpoint
+returns `hrvSummaries[]` of the same shape.
 
-### HRV → `hrv_summaries`
+### Daily heart rate (`dailyHeartRate`) → `daily_hr_samples`
 
-| API field | Column |
-| --- | --- |
-| `hrvSummary.lastNightAvg` | `last_night_avg_ms` |
-| `hrvSummary.weeklyAvg` | `weekly_avg_ms` |
-| `hrvSummary.baselineBalancedLow` / `…High` | `baseline_low_ms` / `baseline_high_ms` |
-| `hrvSummary.status` | `status` (e.g. `BALANCED`) |
+`heartRateValues` = `[[epochMs, bpm], …]`; null bpm entries are gaps and are
+**skipped** (not stored as zero). Offsets computed from `startTimestampGMT`.
 
-### Activities → `activities`
+### Body Battery (`bodyBattery/reports/daily`) → `body_battery_samples`
 
-`summaryId`, `activityId`, `activityType`, `activityName`,
-`startTimeInSeconds`/`startTimeOffsetInSeconds`, `durationInSeconds`,
-`distanceInMeters`, `activeKilocalories`,
-`average/maxHeartRateInBeatsPerMinute`, `average/maxSpeedInMetersPerSecond`,
-`averagePaceInMinutesPerKilometer`, `averageRun/BikeCadence…`,
-`totalElevationGain/LossInMeters`, `startingLatitude/LongitudeInDegree`,
-`steps`, `deviceName`, `isParent`, `parentSummaryId`, `manual`.
+Each day: `bodyBatteryValuesArray` = `[[epochMs, level], …]` (descriptor list
+confirms index 0=timestamp, 1=bodyBatteryLevel). Summary charged/drained/high/low
+come from the daily endpoint.
 
-### Activity detail samples → `activity_samples`
+### Activities (`activities/search/activities`) → `activities`
 
-From `activityDetails.samples[]` and/or decoded `.FIT` `record` messages:
-`startTimeInSeconds`, `latitude/longitudeInDegree`, `elevationInMeters`,
-`heartRate`, `speedMetersPerSecond`, `stepsPerMinute`/`bikeCadenceInRPM`,
-`powerInWatts`, `totalDistanceInMeters`, `airTemperatureCelcius`.
+`activityId` (stable key), `activityName`, `activityType.typeKey`,
+`startTimeGMT`/`startTimeLocal`, `duration`, `distance`, `calories`,
+`averageHR`/`maxHR`, `averageSpeed`/`maxSpeed`, `elevationGain/Loss`,
+`startLatitude/Longitude`, `steps`, `isParent`. Pace derived from avg speed
+when > 0.1 m/s.
 
-FIT decoding uses the official `garmin-fit-sdk`. Positions are converted from
-semicircles to degrees (`180 / 2^31`); timestamps from the FIT epoch
-(1989-12-31) to Unix.
+### Activity time-series → `activity_samples`
+
+The search/detail JSON does **not** include per-second samples. Those come from
+the **FIT file** downloaded via `download-service` (a ZIP → unzip → decode with
+the official `garmin-fit-sdk`). Record fields: timestamp, position_lat/long
+(semicircles → degrees via `180/2³¹`), enhanced_altitude/altitude,
+heart_rate, enhanced_speed/speed, cadence, power, distance, temperature.
+Verified: a real 5 km run decoded to 2124 samples incl. 2119 GPS points.
 
 ## Documented vs derived values
 
-Everything above maps directly to a documented API field **except** these clearly
-labelled derived metrics, computed by this app (not supplied by Garmin):
-
 | Derived metric | Formula | Where |
 | --- | --- | --- |
-| `avgSleepRespiration` | mean of `timeOffsetSleepRespiration` | `normalize.normalize_sleep` |
-| `avgSleepSpo2` | mean of `timeOffsetSleepSpo2` | `normalize.normalize_sleep` |
 | `intensityMinutes` | `moderateMin + 2 × vigorousMin` | `api/presenter._intensity_minutes` |
-| `totalKilocalories` | `activeKilocalories + bmrKilocalories` | `api/presenter.daily_view` |
+| `totalKilocalories` (fallback) | `active + bmr` if API total absent | `api/presenter.daily_view` |
+| activity `avgPaceMinPerKm` | `(1000 / avgSpeedMps) / 60` | `normalize.normalize_activity` |
 | sample `paceMinPerKm` | `(1000 / speedMps) / 60` | `api/presenter.pace_from_speed` |
 
-No proprietary "readiness" or medical-diagnosis scores are invented. Sleep/HRV/
-stress are shown as Garmin reported them, with qualifiers where Garmin provides
-them.
+Note: the real daily endpoint already supplies `totalKilocalories`, so the
+fallback rarely triggers. Intensity minutes are stored in seconds for schema
+consistency and converted back for display. No proprietary readiness/medical
+scores are invented.
+
+## Metric availability (this account, verified)
+
+Present and flowing: steps, distance, floors, calories (active/bmr/total),
+resting + min/max HR, 7-day avg RHR, all-day HR time-series, stress
+(level/durations/qualifier), Body Battery (summary + intraday series), SpO2
+(avg/lowest), respiration (waking avg/high/low), sleep (stages, score, spo2,
+respiration, sleep HR/stress), HRV (last-night avg, 5-min high, weekly avg,
+baseline band, status), activities (running/walking/strength) with FIT-derived
+GPS/HR/elevation/power/cadence.
+
+Endpoints that returned HTTP 400 for the tested params (not wired into sync):
+`usersummary/v2/dailysummaries`, `sleep/dailySleepSummariesByDate` — these likely
+need different parameters; they are not required since the per-day endpoints
+cover the same data. `hydration` and `wellnessactivity range` returned empty
+arrays (no data for this account).
 
 ## Incremental retrieval
 
-The documented pull model uses an upload-time window. `sync_state` records
-`last_synced_through` per category; `SyncEngine.incremental()` resumes from the
-earliest category's last point (overlapping one day to catch late/updated
-summaries — safe because upserts are idempotent). Historical import is bounded by
-`INITIAL_IMPORT_DAYS`. If Garmin limits available history for the Personal tier,
-only the days the API actually returns are stored — the app does not pretend to
-have more.
+`sync_state.last_synced_through` per category; `incremental()` resumes from the
+earliest category's last point minus one day of overlap. Idempotent upserts
+(keyed on calendar date or activityId) make overlap and repeated runs safe.
+Rate limiting (HTTP 429) is handled with `Retry-After`/backoff — observed and
+handled during a real 30-day import.

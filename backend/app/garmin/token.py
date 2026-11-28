@@ -32,6 +32,7 @@ from .errors import (
     GarminAuthError,
     GarminConfigError,
     GarminNetworkError,
+    GarminRateLimitError,
     GarminResponseError,
     GarminServerError,
 )
@@ -43,6 +44,13 @@ logger = logging.getLogger("mygarmin.garmin.token")
 _EXPIRY_SAFETY_MARGIN_S = 300
 # If the response omits an explicit expiry, assume the documented 24h lifetime.
 _DEFAULT_TOKEN_TTL_S = 24 * 60 * 60
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    try:
+        return min(float(resp.headers.get("Retry-After", "")), 120.0)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -98,11 +106,18 @@ class TokenManager:
     # -- token request ------------------------------------------------------
 
     def _request_new_token(self, client: httpx.Client) -> AccessToken:
-        if not self._settings.has_api_key:
+        try:
+            api_key = self._settings.resolve_api_key()
+        except OSError as exc:
             raise GarminConfigError(
-                "No Garmin Personal API key configured. Set GARMIN_PERSONAL_API_KEY in .env."
+                "GARMIN_PERSONAL_API_KEY_FILE points to a file that could not be "
+                "read. Check the path and permissions."
+            ) from exc
+        if not api_key:
+            raise GarminConfigError(
+                "No Garmin Personal API key configured. Set GARMIN_PERSONAL_API_KEY "
+                "or GARMIN_PERSONAL_API_KEY_FILE in .env."
             )
-        api_key = self._settings.garmin_personal_api_key.strip()
         logger.info("Requesting new Garmin Personal API access token")
         try:
             resp = client.post(
@@ -122,12 +137,18 @@ class TokenManager:
                 "expired, or revoked. Create a new key in Garmin Connect and update "
                 "GARMIN_PERSONAL_API_KEY."
             )
+        if resp.status_code == 429:
+            raise GarminRateLimitError(
+                "Garmin token service rate limited (HTTP 429)",
+                retry_after=_retry_after(resp),
+            )
         if resp.status_code >= 500:
             raise GarminServerError(
                 f"Garmin token service returned HTTP {resp.status_code} (transient)."
             )
         if resp.status_code != 200:
-            raise GarminAuthError(
+            # Not a proven credential problem (e.g. 400): do not call it permanent auth.
+            raise GarminResponseError(
                 f"Unexpected HTTP {resp.status_code} from token service."
             )
 
