@@ -6,7 +6,7 @@ are conservative; read this before exposing it beyond your own machine.
 ## Credentials stay server-side
 
 - The Garmin Personal API key is read only from the environment
-  (`GARMIN_PERSONAL_API_KEY`), loaded via `.env`, which is git-ignored.
+  (`GARMIN_PERSONAL_API_KEY`), loaded via `.env` or a git-ignored local key file.
 - The key and access tokens are **never** sent to the frontend, embedded in the
   built JS bundle, or written to logs. Token diagnostics are redacted
   (`AccessToken.redacted()` returns only type + seconds remaining).
@@ -24,14 +24,13 @@ are conservative; read this before exposing it beyond your own machine.
   behind a reverse proxy that adds authentication (e.g. HTTP basic auth or an
   SSO proxy) and TLS.
 
-## The sync (mutating) operation is protected
+## Optional protection for sync
 
-- `POST /api/sync` is the only state-changing endpoint. It requires a bearer
-  token equal to `SYNC_API_TOKEN`, compared in constant time.
-- If `SYNC_API_TOKEN` is unset, the endpoint returns **503** (sync disabled) —
-  there is no unauthenticated way to trigger Garmin calls remotely.
-- The UI never ships the token: you enter it in the browser and it is kept in
-  `sessionStorage` for that tab only.
+- `POST /api/sync` is the only state-changing endpoint. When
+  `SYNC_API_TOKEN` is set, it requires that bearer token, compared in constant
+  time. When unset, sync requests are allowed without a token.
+- The UI never ships a configured token: when the server requires one, you
+  enter it in the browser and it is kept in `sessionStorage` for that tab only.
 - Generate a strong token:
   `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
 
@@ -65,5 +64,6 @@ are conservative; read this before exposing it beyond your own machine.
 
 1. Put the API + built frontend behind a reverse proxy (Caddy/nginx) with TLS.
 2. Require authentication at the proxy for all routes.
-3. Keep `SYNC_API_TOKEN` set and strong.
+3. Set `SYNC_API_TOKEN` to a strong value if network users should not be able to
+   trigger syncs.
 4. Restrict the host firewall to the devices that need access.

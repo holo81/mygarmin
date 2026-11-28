@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -6,7 +6,6 @@ import {
   Area,
   ComposedChart,
   Line,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -121,29 +120,24 @@ function TrendCard({
           {subtitle}
         </div>
       )}
-      <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height="100%">
-          {children}
-        </ResponsiveContainer>
-      </div>
+      {children}
     </div>
   );
 }
 
 function axes() {
-  return (
-    <>
-      <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
-      <XAxis
-        dataKey="date"
-        tickFormatter={fmtDateShort}
-        stroke={cssVar("--text-faint")}
-        fontSize={11}
-        minTickGap={40}
-      />
-      <YAxis width={40} stroke={cssVar("--text-faint")} fontSize={11} />
-    </>
-  );
+  return [
+    <CartesianGrid key="grid" stroke={cssVar("--chart-grid")} vertical={false} />,
+    <XAxis
+      key="x-axis"
+      dataKey="date"
+      tickFormatter={fmtDateShort}
+      stroke={cssVar("--text-faint")}
+      fontSize={11}
+      minTickGap={40}
+    />,
+    <YAxis key="y-axis" width={40} stroke={cssVar("--text-faint")} fontSize={11} />,
+  ];
 }
 
 const tt = () => ({
@@ -158,29 +152,37 @@ const tt = () => ({
 
 function LineSeries({ data, color }: { data: TrendPoint[]; color: string }) {
   return (
-    <ComposedChart data={data}>
-      {axes()}
-      <Line
-        type="monotone"
-        dataKey="value"
-        stroke={color}
-        strokeWidth={2}
-        dot={false}
-        connectNulls={false}
-        isAnimationActive={false}
-      />
-      <Tooltip {...tt()} />
-    </ComposedChart>
+    <ChartFrame>
+      {(width) => (
+        <ComposedChart data={data} width={width} height={260}>
+          {axes()}
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={color}
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+            isAnimationActive={false}
+          />
+          <Tooltip {...tt()} />
+        </ComposedChart>
+      )}
+    </ChartFrame>
   );
 }
 
 function BarSeries({ data, color }: { data: TrendPoint[]; color: string }) {
   return (
-    <BarChart data={data}>
-      {axes()}
-      <Bar dataKey="value" fill={color} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-      <Tooltip {...tt()} />
-    </BarChart>
+    <ChartFrame>
+      {(width) => (
+        <BarChart data={data} width={width} height={260}>
+          {axes()}
+          <Bar dataKey="value" fill={color} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+          <Tooltip {...tt()} />
+        </BarChart>
+      )}
+    </ChartFrame>
   );
 }
 
@@ -196,34 +198,38 @@ function HrvSeries({ data }: { data: TrendPoint[] }) {
         : null,
   }));
   return (
-    <ComposedChart data={shaped}>
-      {axes()}
-      <Area
-        dataKey="low"
-        stackId="band"
-        stroke="none"
-        fill="transparent"
-        isAnimationActive={false}
-      />
-      <Area
-        dataKey="band"
-        stackId="band"
-        stroke="none"
-        fill={cssVar("--accent")}
-        fillOpacity={0.14}
-        isAnimationActive={false}
-      />
-      <Line
-        type="monotone"
-        dataKey="value"
-        stroke={cssVar("--accent")}
-        strokeWidth={2}
-        dot={false}
-        connectNulls={false}
-        isAnimationActive={false}
-      />
-      <Tooltip {...tt()} />
-    </ComposedChart>
+    <ChartFrame>
+      {(width) => (
+        <ComposedChart data={shaped} width={width} height={260}>
+          {axes()}
+          <Area
+            dataKey="low"
+            stackId="band"
+            stroke="none"
+            fill="transparent"
+            isAnimationActive={false}
+          />
+          <Area
+            dataKey="band"
+            stackId="band"
+            stroke="none"
+            fill={cssVar("--accent")}
+            fillOpacity={0.14}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={cssVar("--accent")}
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+            isAnimationActive={false}
+          />
+          <Tooltip {...tt()} />
+        </ComposedChart>
+      )}
+    </ChartFrame>
   );
 }
 
@@ -237,20 +243,50 @@ function SleepSeries({ data }: { data: TrendPoint[] }) {
     awake: toHours(p.awake as number | null),
   }));
   return (
-    <BarChart data={shaped}>
-      <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
-      <XAxis dataKey="date" tickFormatter={fmtDateShort} stroke={cssVar("--text-faint")} fontSize={11} minTickGap={40} />
-      <YAxis width={40} stroke={cssVar("--text-faint")} fontSize={11} unit="h" />
-      <Bar dataKey="deep" stackId="s" fill={cssVar("--accent-2")} isAnimationActive={false} />
-      <Bar dataKey="light" stackId="s" fill={cssVar("--accent")} isAnimationActive={false} />
-      <Bar dataKey="rem" stackId="s" fill={cssVar("--good")} isAnimationActive={false} />
-      <Bar dataKey="awake" stackId="s" fill={cssVar("--text-faint")} radius={[3, 3, 0, 0]} isAnimationActive={false} />
-      <Tooltip
-        {...tt()}
-        formatter={(v: number, name: string) => [`${v?.toFixed?.(1) ?? v} h`, name]}
-      />
-    </BarChart>
+    <ChartFrame>
+      {(width) => (
+        <BarChart data={shaped} width={width} height={260}>
+          <CartesianGrid stroke={cssVar("--chart-grid")} vertical={false} />
+          <XAxis dataKey="date" tickFormatter={fmtDateShort} stroke={cssVar("--text-faint")} fontSize={11} minTickGap={40} />
+          <YAxis width={40} stroke={cssVar("--text-faint")} fontSize={11} unit="h" />
+          <Bar dataKey="deep" stackId="s" fill={cssVar("--accent-2")} isAnimationActive={false} />
+          <Bar dataKey="light" stackId="s" fill={cssVar("--accent")} isAnimationActive={false} />
+          <Bar dataKey="rem" stackId="s" fill={cssVar("--good")} isAnimationActive={false} />
+          <Bar dataKey="awake" stackId="s" fill={cssVar("--text-faint")} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+          <Tooltip
+            {...tt()}
+            formatter={(v: number, name: string) => [`${v?.toFixed?.(1) ?? v} h`, name]}
+          />
+        </BarChart>
+      )}
+    </ChartFrame>
   );
+}
+
+function ChartFrame({ children }: { children: (width: number) => React.ReactElement }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const measure = () => {
+      const measured = Math.floor(element.getBoundingClientRect().width);
+      if (measured > 0) setWidth((current) => (current === measured ? current : measured));
+    };
+
+    measure();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
+  return <div className="chart-wrap" ref={ref}>{width > 0 ? children(width) : null}</div>;
 }
 
 function toHours(seconds: number | null): number | null {

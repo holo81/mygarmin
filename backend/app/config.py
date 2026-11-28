@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root = parent of the `backend` directory (so default relative paths
@@ -36,6 +36,9 @@ class Settings(BaseSettings):
 
     # --- Garmin Personal API ---
     garmin_personal_api_key: str = Field(default="", alias="GARMIN_PERSONAL_API_KEY")
+    garmin_personal_api_key_file: str = Field(
+        default="garmin_accesss.key", alias="GARMIN_PERSONAL_API_KEY_FILE"
+    )
     garmin_token_url: str = Field(
         default="https://personal.connectapi.garmin.com/personalapitoken-service/personal-api/personal-api-key/token",
         alias="GARMIN_TOKEN_URL",
@@ -44,12 +47,18 @@ class Settings(BaseSettings):
         default="https://personal.connectapi.garmin.com", alias="GARMIN_API_BASE_URL"
     )
 
-    garmin_path_dailies: str = Field(default="/wellness-api/rest/dailies", alias="GARMIN_PATH_DAILIES")
-    garmin_path_sleeps: str = Field(default="/wellness-api/rest/sleeps", alias="GARMIN_PATH_SLEEPS")
-    garmin_path_stress: str = Field(
-        default="/wellness-api/rest/stressDetails", alias="GARMIN_PATH_STRESS"
+    garmin_path_dailies: str = Field(
+        default="/usersummary-service/v2/dailysummaries", alias="GARMIN_PATH_DAILIES"
     )
-    garmin_path_hrv: str = Field(default="/wellness-api/rest/hrv", alias="GARMIN_PATH_HRV")
+    garmin_path_sleeps: str = Field(
+        default="/sleep-service/sleep/dailySleepSummariesByDate", alias="GARMIN_PATH_SLEEPS"
+    )
+    garmin_path_stress: str = Field(
+        default="/usersummary-service/stats/stress/daily", alias="GARMIN_PATH_STRESS"
+    )
+    garmin_path_hrv: str = Field(
+        default="/hrv-service/hrv/daily", alias="GARMIN_PATH_HRV"
+    )
     garmin_path_respiration: str = Field(
         default="/wellness-api/rest/respiration", alias="GARMIN_PATH_RESPIRATION"
     )
@@ -57,7 +66,8 @@ class Settings(BaseSettings):
         default="/wellness-api/rest/pulseOx", alias="GARMIN_PATH_PULSEOX"
     )
     garmin_path_activities: str = Field(
-        default="/wellness-api/rest/activities", alias="GARMIN_PATH_ACTIVITIES"
+        default="/activitylist-service/activities/search/activities",
+        alias="GARMIN_PATH_ACTIVITIES",
     )
     garmin_path_activity_details: str = Field(
         default="/wellness-api/rest/activityDetails", alias="GARMIN_PATH_ACTIVITY_DETAILS"
@@ -80,11 +90,25 @@ class Settings(BaseSettings):
     app_env: str = Field(default="production", alias="APP_ENV")
 
     initial_import_days: int = Field(default=90, alias="INITIAL_IMPORT_DAYS")
-    sync_window_days: int = Field(default=1, alias="SYNC_WINDOW_DAYS")
+    sync_window_days: int = Field(default=27, alias="SYNC_WINDOW_DAYS")
 
     cors_origins: str = Field(
         default="http://localhost:5173,http://127.0.0.1:5173", alias="CORS_ORIGINS"
     )
+
+    @model_validator(mode="after")
+    def load_personal_api_key_file(self) -> "Settings":
+        if self.garmin_personal_api_key.strip():
+            return self
+
+        key_path = Path(self.garmin_personal_api_key_file).expanduser()
+        if not key_path.is_absolute():
+            key_path = _PROJECT_ROOT / key_path
+        if not key_path.is_file() and self.garmin_personal_api_key_file == "garmin_accesss.key":
+            key_path = _PROJECT_ROOT / "garmin_access.key"
+        if key_path.is_file():
+            self.garmin_personal_api_key = key_path.read_text(encoding="utf-8").strip()
+        return self
 
     # --- Derived helpers ---
     @property

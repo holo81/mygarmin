@@ -126,7 +126,7 @@ def _as_list(data) -> list:
         return data
     if isinstance(data, dict):
         # Some endpoints wrap results; accept a few common shapes.
-        for key in ("items", "results", "data"):
+        for key in ("items", "results", "data", "hrvSummaries"):
             if isinstance(data.get(key), list):
                 return data[key]
         return [data]
@@ -309,7 +309,14 @@ class SyncEngine:
             for s in states.values()
             if s["last_synced_through"] is not None
         ]
-        if synced_points:
+        missing_categories = any(
+            category not in states or states[category]["last_synced_through"] is None
+            for category in DEFAULT_CATEGORIES
+        )
+        if missing_categories:
+            initial_start = now - self.settings.initial_import_days * _DAY_SECONDS
+            start = min(initial_start, min(synced_points) - _DAY_SECONDS) if synced_points else initial_start
+        elif synced_points:
             start = min(synced_points) - _DAY_SECONDS
         else:
             start = now - self.settings.initial_import_days * _DAY_SECONDS
@@ -360,6 +367,9 @@ class SyncEngine:
                 hr = norm.normalize_daily_hr_samples(obj)
                 if row["calendar_date"] and hr:
                     repo.replace_daily_hr_samples(row["calendar_date"], hr)
+                stress_row = norm.normalize_stress(obj)
+                if stress_row and stress_row["body_battery_level"] is not None:
+                    repo.upsert_stress(stress_row, raw_id)
                 count += 1
         elif category == "sleeps":
             for obj in items:
@@ -376,7 +386,8 @@ class SyncEngine:
                 row = norm.normalize_stress(obj)
                 if not row:
                     continue
-                repo.upsert_stress(row, raw_id)
+                if row["body_battery_level"] is not None:
+                    repo.upsert_stress(row, raw_id)
                 if row["calendar_date"]:
                     ss = norm.normalize_stress_samples(obj)
                     if ss:

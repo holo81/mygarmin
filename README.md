@@ -80,7 +80,7 @@ mappings, [`docs/SECURITY.md`](docs/SECURITY.md) for the security model, and
 cp .env.example .env
 # Edit .env and set at least:
 #   GARMIN_PERSONAL_API_KEY=...        your key
-#   SYNC_API_TOKEN=...                 a long random string (protects sync)
+#   SYNC_API_TOKEN=...                 optional; protects sync when configured
 #   APP_ENV=production
 ```
 
